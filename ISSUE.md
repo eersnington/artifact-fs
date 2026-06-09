@@ -17,9 +17,7 @@ Commands:
 docker build -t artifact-fs-example -f examples/Dockerfile .
 
 docker run --rm --cap-add SYS_ADMIN --device /dev/fuse \
-  -e REPO_REMOTE_URL=https://github.com/octocat/Hello-World.git \
-  -e REPO_BRANCH=master \
-  artifact-fs-example sh -lc 'cat README; git status --short --untracked-files=no; artifact-fs status --name repo'
+  artifact-fs-example sh -lc 'TARGET=packages/wrangler/src/index.ts; stat -c "%n %s" "$TARGET"; cat "$TARGET"; git status --short --untracked-files=no "$TARGET"; artifact-fs status --name repo'
 ```
 
 ## Observed
@@ -30,30 +28,35 @@ ArtifactFS logs this during setup/indexing:
 {"level":"WARN","msg":"batch size resolution failed, files will show size 0 until hydrated","repo":"repo","error":"exit status 128"}
 ```
 
-The mount succeeds and lists the tracked file:
+The mount succeeds and lists the repo root:
 
 ```text
 artifact-fs: mounted at /mnt/repo
-README
+AGENTS.md
+CLAUDE.md
+README.md
+packages
+...
 ```
 
-But `cat README` prints no content, and `git status --short --untracked-files=no` reports:
+But the nested tracked file is reported as `0` bytes, `cat` prints no content, and `git status --short --untracked-files=no "$TARGET"` reports:
 
 ```text
- M README
+packages/wrangler/src/index.ts 0
+ M packages/wrangler/src/index.ts
 ```
-
-With a larger repository like [`cloudflare/workers-sdk`](https://github.com/cloudflare/workers-sdk), the same symptom appeared as many tracked files reported modified by `git status`.
 
 ## Expected
 
-`cat README` should print:
+The target file should report a non-zero size and `cat "$TARGET"` should print its Git blob content.
+
+Note: the small [`octocat/Hello-World`](https://github.com/octocat/Hello-World) repo is a poor repro because its root `README` is often prefetched/hydrated before manual checks run. For comparison, that file's expected content is:
 
 ```text
 Hello World!
 ```
 
-`git status --short --untracked-files=no` should be clean.
+`git status --short --untracked-files=no "$TARGET"` should be clean.
 
 ## Likely Area To Inspect
 
