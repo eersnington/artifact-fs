@@ -48,3 +48,4 @@ export type {
 } from "./artifacts/workers.js";
 export type { LocalNodeOptions } from "./artifacts/local-node.js";
 export type { HttpStoreOptions } from "./artifacts/hosted.js";
+export { createLocalBridgeHandler } from "./artifacts/bridge-server.js";
