@@ -1,4 +1,3 @@
-import { encodeBase64 } from "@oslojs/encoding";
 import { CapsuleError } from "../core/errors.js";
 import type { CommittedStep } from "../core/types.js";
 import type { RepositorySession, RepositoryStore } from "./tree-backend.js";
@@ -8,15 +7,15 @@ import type { RepositorySession, RepositoryStore } from "./tree-backend.js";
  * the Git repos (for example an ArtifactFS mount plus native git, or a hosted
  * artifact API) and implements this protocol:
  *
- *   POST /runs/open                { repo, branch, initFiles, initMessage } -> { repo, branch, head? }
+ *   POST /runs/open                multipart metadata + raw file parts      -> { repo, branch, head? }
  *   GET  /runs/:repo/head                                                  -> { head? }
  *   GET  /runs/:repo/file?path=<p>                                         -> 200 bytes | 404
- *   POST /runs/:repo/commit        { files, message }                      -> { commit, parent? }
+ *   POST /runs/:repo/commit        multipart metadata + raw file parts      -> { commit, parent? }
  *
- * File bytes are base64-encoded into JSON objects keyed by repo path, for
- * example `{ files: { "steps/.../output.txt": "aGVsbG8=" } }`. The full JSON
- * request is built in memory before `fetch()`, so this adapter is not for very
- * large commits.
+ * Multipart requests contain a `metadata` JSON part whose file entries map
+ * repo paths to form part names; repo paths never come from multipart filenames.
+ * File bodies are still buffered before `fetch()`, so this adapter is not for
+ * very large commits.
  */
 export type RemoteHttpStoreOptions = {
   readonly url: string;
@@ -24,27 +23,44 @@ export type RemoteHttpStoreOptions = {
   readonly fetch?: typeof fetch;
 };
 
+type MultipartFileEntry = {
+  readonly path: string;
+  readonly part: string;
+};
+
+type OpenRepositoryMetadata = {
+  readonly protocolVersion: 1;
+  readonly repo: string;
+  readonly branch: string;
+  readonly message: string;
+  readonly files: readonly MultipartFileEntry[];
+};
+
+type CommitFilesMetadata = {
+  readonly protocolVersion: 1;
+  readonly message: string;
+  readonly files: readonly MultipartFileEntry[];
+};
+
 export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStore {
   const baseUrl = options.url.replace(/\/+$/, "");
-  const fetchImpl = options.fetch ?? fetch;
+  const fetchRemote = options.fetch ?? fetch;
 
   const sendRemoteRequest = async (
     method: "GET" | "POST",
     route: string,
-    jsonBody?: unknown,
+    body?: FormData,
   ): Promise<Response> => {
     let response: Response;
     try {
-      response = await fetchImpl(`${baseUrl}${route}`, {
-        method,
-        headers: {
-          ...(jsonBody !== undefined ? { "content-type": "application/json" } : {}),
-          ...(options.token !== undefined
-            ? { authorization: `Bearer ${options.token}` }
-            : {}),
-        },
-        ...(jsonBody !== undefined ? { body: JSON.stringify(jsonBody) } : {}),
-      });
+      const requestOptions: NonNullable<Parameters<typeof fetch>[1]> = { method };
+      if (options.token !== undefined) {
+        requestOptions.headers = { authorization: `Bearer ${options.token}` };
+      }
+      if (body !== undefined) {
+        requestOptions.body = body;
+      }
+      response = await fetchRemote(`${baseUrl}${route}`, requestOptions);
     } catch (error) {
       throw new CapsuleError(
         "BACKEND_UNAVAILABLE",
@@ -75,12 +91,13 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStor
     kind: "remote",
 
     async openRepository(repoName, init) {
-      const response = await sendRemoteRequest("POST", "/runs/open", {
+      const response = await sendRemoteRequest("POST", "/runs/open", buildMultipartBody({
+        protocolVersion: 1,
         repo: repoName,
         branch: init.branch,
-        initFiles: encodeFileMap(init.initFiles),
-        initMessage: init.initMessage,
-      });
+        message: init.initMessage,
+        files: fileEntries(init.initFiles),
+      }, init.initFiles));
       await assertRemoteResponseOk(response, `open run repo "${repoName}"`);
       return createRemoteRepositorySession(repoName, init.branch);
     },
@@ -113,10 +130,11 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStor
       },
 
       async commitFiles(input): Promise<CommittedStep> {
-        const response = await sendRemoteRequest("POST", `${repoRoute}/commit`, {
-          files: encodeFileMap(input.files),
+        const response = await sendRemoteRequest("POST", `${repoRoute}/commit`, buildMultipartBody({
+          protocolVersion: 1,
           message: input.message,
-        });
+          files: fileEntries(input.files),
+        }, input.files));
         await assertRemoteResponseOk(response, "commit");
         return (await response.json()) as CommittedStep;
       },
@@ -124,10 +142,36 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStor
   }
 }
 
-function encodeFileMap(files: ReadonlyMap<string, Uint8Array>): Record<string, string> {
-  const encoded: Record<string, string> = {};
-  for (const [path, bytes] of files) {
-    encoded[path] = encodeBase64(bytes);
+function buildMultipartBody(
+  metadata: OpenRepositoryMetadata | CommitFilesMetadata,
+  files: ReadonlyMap<string, Uint8Array>,
+): FormData {
+  const remoteMultipartBody = new FormData();
+  remoteMultipartBody.set(
+    "metadata",
+    new Blob([JSON.stringify(metadata)], { type: "application/json" }),
+    "metadata.json",
+  );
+  for (const { path, part } of metadata.files) {
+    const bytes = files.get(path);
+    if (bytes === undefined) {
+      throw new CapsuleError(
+        "INVALID_CAPSULE_REQUEST",
+        `Remote multipart request metadata referenced ${path}, but no bytes were staged for that path. ` +
+          `No request was sent; retry after rebuilding the staged file set.`,
+      );
+    }
+    remoteMultipartBody.set(part, new Blob([bytes]), part);
   }
-  return encoded;
+  return remoteMultipartBody;
+}
+
+function fileEntries(files: ReadonlyMap<string, Uint8Array>): MultipartFileEntry[] {
+  let index = 0;
+  const entries: MultipartFileEntry[] = [];
+  for (const path of files.keys()) {
+    entries.push({ path, part: `file-${index}` });
+    index += 1;
+  }
+  return entries;
 }

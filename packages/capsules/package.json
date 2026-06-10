@@ -49,7 +49,6 @@
     "side-effects"
   ],
   "dependencies": {
-    "@oslojs/encoding": "1.1.0",
     "isomorphic-git": "1.27.1"
   },
   "devDependencies": {

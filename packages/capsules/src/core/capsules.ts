@@ -135,9 +135,9 @@ class CapsulesImpl implements CapsulesService {
         effects: {
           record: (kind, record) => recorder.recordEffect(kind, record),
         },
-        ...(step.idempotencyKey !== undefined
-          ? { idempotencyKey: step.idempotencyKey }
-          : {}),
+        ...(step.idempotencyKey !== undefined && {
+          idempotencyKey: step.idempotencyKey,
+        }),
       });
     } catch (error) {
       await this.recordFailure(session, stepSession, recorder, error);
@@ -148,7 +148,7 @@ class CapsulesImpl implements CapsulesService {
     const manifest = recorder.buildManifest(startedAt, output, {
       repo: session.repo,
       branch: session.branch,
-      ...(parentAtStart !== undefined ? { parent: parentAtStart } : {}),
+      ...(parentAtStart !== undefined && { parent: parentAtStart }),
     });
     stepSession.stage(outputPath(step.attemptDir), outputBytes);
     stepSession.stage(
@@ -177,10 +177,10 @@ class CapsulesImpl implements CapsulesService {
         name: capsuleName,
         id: step.capsuleId,
         inputHash: step.inputHash,
-        ...(step.idempotencyKey !== undefined
-          ? { idempotencyKey: step.idempotencyKey }
-          : {}),
-        ...(spec.dedupe !== undefined ? { dedupeKey: spec.dedupe.key } : {}),
+        ...(step.idempotencyKey !== undefined && {
+          idempotencyKey: step.idempotencyKey,
+        }),
+        ...(spec.dedupe !== undefined && { dedupeKey: spec.dedupe.key }),
       },
       workflow: {
         name: identityCtx.workflowName,
@@ -194,16 +194,16 @@ class CapsulesImpl implements CapsulesService {
         repo: session.repo,
         branch: session.branch,
         commit: committed.commit,
-        ...(committed.parent !== undefined ? { parent: committed.parent } : {}),
+        ...(committed.parent !== undefined && { parent: committed.parent }),
       },
       files: recorder.fileRefs(),
       effects: recorder.effectRefs(),
       effectCount: recorder.effectRefs().length,
       output,
       manifestPath: manifestPath(step.attemptDir),
-      ...(committed.parent !== undefined
-        ? { diff: { base: committed.parent, head: committed.commit } }
-        : {}),
+      ...(committed.parent !== undefined && {
+        diff: { base: committed.parent, head: committed.commit },
+      }),
     };
   }
 
@@ -234,7 +234,7 @@ class CapsulesImpl implements CapsulesService {
     return {
       repo: session.repo,
       branch: session.branch,
-      ...(head !== undefined ? { head } : {}),
+      ...(head !== undefined && { head }),
       run:
         runJson !== null
           ? (JSON.parse(decoder.decode(runJson)) as InspectedRun["run"])
@@ -341,9 +341,9 @@ async function resolveIdentity(
     stepCount,
     attempt,
     inputHash,
-    ...(spec.idempotencyKey !== undefined
-      ? { idempotencyKey: spec.idempotencyKey }
-      : {}),
+    ...(spec.idempotencyKey !== undefined && {
+      idempotencyKey: spec.idempotencyKey,
+    }),
     stepDir,
     attemptDir: attemptDirPath(stepDir, attempt),
   };
@@ -405,13 +405,10 @@ class AttemptRecorder {
     const { bytes, mediaType } = await bodyToBytes(relPath, body);
     this.assertFileSize(relPath, bytes.byteLength);
     const repoPath = `${filesBasePath(this.ctx.step.attemptDir)}/${relPath}`;
+    const refMediaType = options?.mediaType ?? mediaType;
     const ref: CapsuleFileRef = {
       path: repoPath,
-      ...(options?.mediaType !== undefined
-        ? { mediaType: options.mediaType }
-        : mediaType !== undefined
-          ? { mediaType }
-          : {}),
+      ...(refMediaType !== undefined && { mediaType: refMediaType }),
       size: bytes.byteLength,
       digest: await digestBytes(bytes),
     };
@@ -436,13 +433,13 @@ class AttemptRecorder {
       kind,
       path: effectRecordPath(effectDir),
       seq: this.effectRecords.length + 1,
-      ...(record.externalId !== undefined ? { externalId: record.externalId } : {}),
-      ...(record.httpStatus !== undefined ? { httpStatus: record.httpStatus } : {}),
-      ...(this.ctx.step.idempotencyKey !== undefined
-        ? { idempotencyKey: this.ctx.step.idempotencyKey }
-        : {}),
-      ...(request !== undefined ? { request } : {}),
-      ...(response !== undefined ? { response } : {}),
+      ...(record.externalId !== undefined && { externalId: record.externalId }),
+      ...(record.httpStatus !== undefined && { httpStatus: record.httpStatus }),
+      ...(this.ctx.step.idempotencyKey !== undefined && {
+        idempotencyKey: this.ctx.step.idempotencyKey,
+      }),
+      ...(request !== undefined && { request }),
+      ...(response !== undefined && { response }),
     };
     const effectRecord = buildEffectRecord({
       kind,
@@ -476,13 +473,12 @@ class AttemptRecorder {
     const repoPath = `${effectDir}/${snapshotPath}`;
     const { bytes, mediaType } = await bodyToBytes(snapshotPath, body);
     this.assertFileSize(repoPath, bytes.byteLength);
+    const refMediaType = isSnapshotObject(snapshot)
+      ? snapshot.mediaType ?? mediaType
+      : mediaType;
     const ref: CapsuleFileRef = {
       path: repoPath,
-      ...(isSnapshotObject(snapshot) && snapshot.mediaType !== undefined
-        ? { mediaType: snapshot.mediaType }
-        : mediaType !== undefined
-          ? { mediaType }
-          : {}),
+      ...(refMediaType !== undefined && { mediaType: refMediaType }),
       size: bytes.byteLength,
       digest: await digestBytes(bytes),
     };
@@ -532,10 +528,10 @@ class AttemptRecorder {
       capsule: {
         name: step.capsuleName,
         id: step.capsuleId,
-        ...(step.idempotencyKey !== undefined
-          ? { idempotencyKey: step.idempotencyKey }
-          : {}),
-        ...(this.dedupeKey !== undefined ? { dedupeKey: this.dedupeKey } : {}),
+        ...(step.idempotencyKey !== undefined && {
+          idempotencyKey: step.idempotencyKey,
+        }),
+        ...(this.dedupeKey !== undefined && { dedupeKey: this.dedupeKey }),
       },
       input: { hash: step.inputHash },
       artifact,
@@ -568,9 +564,9 @@ class AttemptRecorder {
       capsule: {
         name: step.capsuleName,
         id: step.capsuleId,
-        ...(step.idempotencyKey !== undefined
-          ? { idempotencyKey: step.idempotencyKey }
-          : {}),
+        ...(step.idempotencyKey !== undefined && {
+          idempotencyKey: step.idempotencyKey,
+        }),
       },
       input: { hash: step.inputHash },
       files: this.allFileRefs(),
@@ -660,12 +656,12 @@ function refsFromResolved<Output>(
       name: resolved.manifest.capsule.name,
       id: resolved.manifest.capsule.id,
       inputHash: resolved.manifest.input.hash,
-      ...(resolved.manifest.capsule.idempotencyKey !== undefined
-        ? { idempotencyKey: resolved.manifest.capsule.idempotencyKey }
-        : {}),
-      ...(resolved.manifest.capsule.dedupeKey !== undefined
-        ? { dedupeKey: resolved.manifest.capsule.dedupeKey }
-        : {}),
+      ...(resolved.manifest.capsule.idempotencyKey !== undefined && {
+        idempotencyKey: resolved.manifest.capsule.idempotencyKey,
+      }),
+      ...(resolved.manifest.capsule.dedupeKey !== undefined && {
+        dedupeKey: resolved.manifest.capsule.dedupeKey,
+      }),
     },
     workflow: {
       name: resolved.manifest.workflow.name,
@@ -679,20 +675,20 @@ function refsFromResolved<Output>(
       repo: session.repo,
       branch: session.branch,
       commit: resolved.commit,
-      ...(resolved.parent !== undefined ? { parent: resolved.parent } : {}),
+      ...(resolved.parent !== undefined && { parent: resolved.parent }),
     },
-    files: { ...(resolved.manifest.exposedFiles ?? {}) },
+    files: { ...resolved.manifest.exposedFiles },
     effects: resolved.manifest.effects.map((effect) => ({
       kind: effect.kind,
       path: effect.path,
       seq: effect.seq,
-      ...(effect.externalId !== undefined ? { externalId: effect.externalId } : {}),
-      ...(effect.httpStatus !== undefined ? { httpStatus: effect.httpStatus } : {}),
-      ...(effect.idempotencyKey !== undefined
-        ? { idempotencyKey: effect.idempotencyKey }
-        : {}),
-      ...(effect.request !== undefined ? { request: effect.request } : {}),
-      ...(effect.response !== undefined ? { response: effect.response } : {}),
+      ...(effect.externalId !== undefined && { externalId: effect.externalId }),
+      ...(effect.httpStatus !== undefined && { httpStatus: effect.httpStatus }),
+      ...(effect.idempotencyKey !== undefined && {
+        idempotencyKey: effect.idempotencyKey,
+      }),
+      ...(effect.request !== undefined && { request: effect.request }),
+      ...(effect.response !== undefined && { response: effect.response }),
     })),
     output: resolved.manifest.output as Output,
     effectCount: resolved.manifest.effects.length,
@@ -702,9 +698,9 @@ function refsFromResolved<Output>(
         resolved.manifest.step.attempt,
       ),
     ),
-    ...(resolved.parent !== undefined
-      ? { diff: { base: resolved.parent, head: resolved.commit } }
-      : {}),
+    ...(resolved.parent !== undefined && {
+      diff: { base: resolved.parent, head: resolved.commit },
+    }),
   };
 }
 
@@ -713,10 +709,12 @@ function optionalLimits(options: CreateCapsulesOptions): {
   readonly maxFileBytes?: number;
 } {
   return {
-    ...(options.maxOutputBytes !== undefined
-      ? { maxOutputBytes: options.maxOutputBytes }
-      : {}),
-    ...(options.maxFileBytes !== undefined ? { maxFileBytes: options.maxFileBytes } : {}),
+    ...(options.maxOutputBytes !== undefined && {
+      maxOutputBytes: options.maxOutputBytes,
+    }),
+    ...(options.maxFileBytes !== undefined && {
+      maxFileBytes: options.maxFileBytes,
+    }),
   };
 }
 
