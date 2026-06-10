@@ -9,8 +9,8 @@ import { effectDirPath } from "../git/layout.js";
 
 /**
  * Compute the repo-absolute effect directory for the nth occurrence of an
- * effect kind within one attempt. The first occurrence keeps the clean
- * `<safe-kind>` name; repeats get `-2`, `-3`, ... suffixes.
+ * effect kind within one attempt. Directories always include a sequence prefix
+ * so repeated provider calls do not collide and sort in record order.
  */
 export function effectDirectoryPath(
   step: StepIdentity,
@@ -18,7 +18,7 @@ export function effectDirectoryPath(
   kindSeq: number,
 ): string {
   const safeKind = safeEffectKind(kind);
-  const stem = kindSeq <= 1 ? safeKind : `${safeKind}-${kindSeq}`;
+  const stem = `${String(kindSeq).padStart(3, "0")}-${safeKind}`;
   return effectDirPath(step.attemptDir, stem);
 }
 

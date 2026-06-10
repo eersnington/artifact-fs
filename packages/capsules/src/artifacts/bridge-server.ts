@@ -19,7 +19,7 @@ type CommitRequest = {
 /**
  * Framework-neutral local bridge handler. Run this in a local Node service
  * (or any runtime with Fetch API Request/Response) and point Workers code at
- * it with `Artifacts.localBridge({ url })`.
+ * it with `remote({ url })`.
  *
  * The bridge owns local Git repos under `mountRoot`; ArtifactFS can mount or
  * inspect the same root outside the Worker runtime.

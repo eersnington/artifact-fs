@@ -8,11 +8,11 @@ import type {
   StepIdentity,
   StepManifest,
 } from "../core/types.js";
-import { manifestPath } from "../git/layout.js";
+import { RUN_INDEX_PATH, manifestPath } from "../git/layout.js";
 
 /**
- * Minimal storage contract that memory, Workers binding, and local-node
- * layers implement. The adapter below turns any TreeStore into the canonical
+ * Minimal storage contract that memory, Cloudflare, local, and remote
+ * adapters implement. The adapter below turns any TreeStore into the canonical
  * ArtifactBackend, so commit layout and resolution logic exist exactly once.
  */
 export interface TreeStore {
@@ -80,7 +80,8 @@ export function createTreeBackend(store: TreeStore): ArtifactBackend {
       session: ArtifactRunSession,
       step: StepIdentity,
     ): Promise<ResolvedStep | null> {
-      const path = manifestPath(step.attemptDir);
+      const path = await resolveCommittedManifestPath(session, step);
+      if (path === undefined) return null;
       const bytes = await session.readFile(path);
       if (bytes === null) return null;
       const manifest = JSON.parse(decoder.decode(bytes)) as StepManifest;
@@ -127,6 +128,35 @@ export function createTreeBackend(store: TreeStore): ArtifactBackend {
       });
     },
   };
+}
+
+async function resolveCommittedManifestPath(
+  session: ArtifactRunSession,
+  step: StepIdentity,
+): Promise<string | undefined> {
+  const indexBytes = await session.readFile(RUN_INDEX_PATH);
+  if (indexBytes !== null) {
+    const index = JSON.parse(decoder.decode(indexBytes)) as {
+      entries?: Array<{
+        stepDir: string;
+        capsule: string;
+        status: string;
+        manifestPath: string;
+      }>;
+    };
+    const entry = index.entries?.find(
+      (candidate) =>
+        candidate.status === "committed" &&
+        candidate.stepDir === step.stepDir &&
+        candidate.capsule === step.capsuleName,
+    );
+    if (entry !== undefined) return entry.manifestPath;
+  }
+
+  const currentAttemptPath = manifestPath(step.attemptDir);
+  return (await session.readFile(currentAttemptPath)) !== null
+    ? currentAttemptPath
+    : undefined;
 }
 
 /** Serialize async operations; used by stores to order concurrent commits. */

@@ -8,8 +8,8 @@ import {
 
 /**
  * Local Node artifact store: run repos are plain Git working trees under a
- * root directory, committed with the native `git` binary. This is the layer
- * for Node scripts, tests, and CLIs.
+ * root directory, committed with the native `git` binary. This is used by the
+ * local adapter for Node scripts, tests, and CLIs.
  *
  * The root can be a normal directory or a directory you later serve/inspect
  * with ArtifactFS (`artifact-fs daemon`); Capsule does not manage the

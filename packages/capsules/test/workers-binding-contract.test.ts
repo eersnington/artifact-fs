@@ -1,14 +1,14 @@
 import { describe, expect, it } from "vitest";
 import {
-  Artifacts,
-  Capsules,
+  createCapsules,
   type ArtifactsBindingLike,
 } from "../src/index.js";
+import { cloudflare } from "../src/cloudflare.js";
 import type { GitOps, GitWorkspace } from "../src/artifacts/workers.js";
 
 const encoder = new TextEncoder();
 
-describe("Workers Artifacts binding layer", () => {
+describe("Cloudflare adapter", () => {
   it("creates a repo, strips token expiry metadata, and never returns tokens in refs", async () => {
     const opened: Array<{
       remote: string;
@@ -44,14 +44,14 @@ describe("Workers Artifacts binding layer", () => {
       },
     };
 
-    const capsules = Capsules.layer(Artifacts.workers(binding, { gitOps }));
+    const capsules = createCapsules({ adapter: cloudflare(binding, { gitOps }) });
     const refs = await capsules.capture({
       workflow: { workflowName: "ResearchWorkflow", instanceId: "research-001" },
       step: { step: { name: "create ai response", count: 1 }, attempt: 1 },
       name: "ai-response",
       input: { prompt: "hi" },
       run: async ({ files, effects }) => {
-        await files.write("output/answer.md", "hello");
+        await files.write("output/answer.md", "hello", { exposeAs: "answer" });
         await effects.record("cloudflare-ai.run", { externalId: "run_123" });
         return { answerPath: "output/answer.md" };
       },
@@ -66,7 +66,8 @@ describe("Workers Artifacts binding layer", () => {
       },
     ]);
     expect(JSON.stringify(refs)).not.toContain("secret");
-    expect(await workspace.readFile(refs.files["output/answer.md"]!.path)).toEqual(
+    expect(refs.artifact.adapter).toBe("cloudflare");
+    expect(await workspace.readFile(refs.files.answer!.path)).toEqual(
       encoder.encode("hello"),
     );
   });

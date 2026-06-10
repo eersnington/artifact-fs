@@ -5,7 +5,7 @@ import {
   validateCapsulePath,
 } from "./validation.js";
 import type {
-  ArtifactLayer,
+  CapsuleAdapter,
   ArtifactRunSession,
   ArtifactStepSession,
   CapsuleEffectRecordInput,
@@ -16,12 +16,14 @@ import type {
   CapsuleFileRef,
   CapsuleEffectRef,
   CapsuleRefs,
+  CapsuleRunContext,
   CapsuleSpec,
+  CaptureOptions,
   CapsulesService,
   EffectRecord,
   FailureManifest,
   InspectedRun,
-  InternalArtifactLayer,
+  InternalCapsuleAdapter,
   OpenRunInput,
   RunIndexEntry,
   StandardSchemaV1,
@@ -61,35 +63,46 @@ const decoder = new TextDecoder();
  */
 const MAX_OUTPUT_BYTES = 256 * 1024;
 
+export type CreateCapsulesOptions = {
+  readonly adapter: CapsuleAdapter;
+  readonly maxOutputBytes?: number;
+  readonly maxFileBytes?: number;
+};
+
+export function createCapsules(options: CreateCapsulesOptions): CapsulesService {
+  return new CapsulesImpl(options.adapter, optionalLimits(options));
+}
+
 export const Capsules = {
-  /**
-   * Configure a Capsules service from an artifact layer. The layer decides
-   * where run repos live (memory, Workers binding, local, hosted); Workflow
-   * code only ever talks to `capture()`.
-   */
-  layer(artifacts: ArtifactLayer): CapsulesService {
-    return new CapsulesImpl(artifacts);
-  },
   define,
 };
 
 class CapsulesImpl implements CapsulesService {
-  private readonly layer: InternalArtifactLayer;
+  private readonly adapter: InternalCapsuleAdapter;
+  private readonly maxOutputBytes: number;
+  private readonly maxFileBytes: number | undefined;
 
-  constructor(layer: ArtifactLayer) {
-    this.layer = layer as InternalArtifactLayer;
+  constructor(
+    adapter: CapsuleAdapter,
+    options: { readonly maxOutputBytes?: number; readonly maxFileBytes?: number } = {},
+  ) {
+    this.adapter = adapter as InternalCapsuleAdapter;
+    this.maxOutputBytes = options.maxOutputBytes ?? MAX_OUTPUT_BYTES;
+    this.maxFileBytes = options.maxFileBytes;
   }
 
   async capture<Input, Output>(
-    spec: CapsuleSpec<Input, Output>,
+    specOrOptions: CapsuleSpec<Input, Output> | CaptureOptions<Input>,
+    run?: (ctx: CapsuleRunContext<Input>) => Promise<Output>,
   ): Promise<CapsuleRefs<Output>> {
+    const spec = normalizeCaptureSpec(specOrOptions, run);
     const capsuleName = validateCapsuleName(spec.name);
     const input = spec.inputSchema
       ? await validateInput(spec.inputSchema, spec.input, capsuleName)
       : spec.input;
     const identityCtx = await resolveIdentity(spec, input);
 
-    const backend = this.layer.backend;
+    const backend = this.adapter.backend;
     const session = await backend.openRun(identityCtx.openRun);
     const step = identityCtx.step;
 
@@ -97,18 +110,23 @@ class CapsulesImpl implements CapsulesService {
     if (existing !== null) {
       if (existing.manifest.input.hash !== step.inputHash) {
         throw new CapsuleError(
-          "CAPSULE_CONFLICT",
-          `Capsule "${capsuleName}" already has a committed attempt at ${step.attemptDir} ` +
+      "CAPSULE_CONFLICT",
+          `Capsule "${capsuleName}" already has a committed logical step at ${step.stepDir} ` +
             `with input hash ${existing.manifest.input.hash}, but this call provided ` +
-            `${step.inputHash}. The committed artifact is intact. A step attempt must be ` +
-            `deterministic in its input; use a different step name or pass the same input.`,
+            `${step.inputHash}. The committed artifact is intact and the callback was not re-run. ` +
+            `Use a different step name/count or pass the same input.`,
         );
       }
-      return refsFromResolved<Output>(this.layer.kind, session, existing);
+      return refsFromResolved<Output>(this.adapter.kind, session, existing);
     }
 
     const stepSession = await backend.beginStep(session, step);
-    const recorder = new AttemptRecorder(identityCtx, stepSession, spec.dedupe?.key);
+    const recorder = new AttemptRecorder(
+      identityCtx,
+      stepSession,
+      spec.dedupe?.key,
+      this.maxFileBytes,
+    );
     const startedAt = new Date();
     const parentAtStart = await session.head();
 
@@ -131,7 +149,7 @@ class CapsulesImpl implements CapsulesService {
       throw error;
     }
 
-    const outputBytes = serializeOutput(capsuleName, output);
+    const outputBytes = serializeOutput(capsuleName, output, this.maxOutputBytes);
     const manifest = recorder.buildManifest(startedAt, output, {
       repo: session.repo,
       branch: session.branch,
@@ -177,7 +195,8 @@ class CapsulesImpl implements CapsulesService {
         attempt: step.attempt,
       },
       artifact: {
-        backend: this.layer.kind,
+        backend: this.adapter.kind,
+        adapter: this.adapter.kind,
         repo: session.repo,
         branch: session.branch,
         commit: committed.commit,
@@ -185,6 +204,7 @@ class CapsulesImpl implements CapsulesService {
       },
       files: recorder.fileRefs(),
       effects: recorder.effectRefs(),
+      effectCount: recorder.effectRefs().length,
       output,
       manifestPath: manifestPath(step.attemptDir),
       ...(committed.parent !== undefined
@@ -206,7 +226,7 @@ class CapsulesImpl implements CapsulesService {
       target.instanceId,
       identityHash.slice("sha256:".length),
     );
-    const session = await this.layer.backend.openRun({
+    const session = await this.adapter.backend.openRun({
       workflowName: target.workflowName,
       instanceId: target.instanceId,
       repoName,
@@ -264,7 +284,7 @@ class CapsulesImpl implements CapsulesService {
         status: "failed",
         manifestPath: failurePath(step.attemptDir),
       });
-      const backend = this.layer.backend;
+      const backend = this.adapter.backend;
       if (backend.abortStep !== undefined) {
         await backend.abortStep(session, stepSession, failure);
       } else {
@@ -317,13 +337,6 @@ async function resolveIdentity(
         "Pass the WorkflowStepContext that step.do() provides to its callback.",
     );
   }
-  if (spec.dedupe?.mode === "reuse-output") {
-    throw invalidRequest(
-      'dedupe mode "reuse-output" is not implemented yet; use "record-reuse", ' +
-        "which records the dedupe key in the manifest without skipping the producer.",
-    );
-  }
-
   const inputHash = await stableHash(input);
   const identityHash = await stableHash({ workflowName, instanceId });
   const stepDir = stepDirName(stepCount, stepName);
@@ -377,6 +390,7 @@ function initRunFiles(
 /** Buffers file writes and effect records for one step attempt. */
 class AttemptRecorder {
   private readonly refs: Record<string, CapsuleFileRef> = {};
+  private readonly exposedRefs: Record<string, CapsuleFileRef> = {};
   private readonly effectRecords: EffectRecord[] = [];
   private readonly effectRefsByPath: CapsuleEffectRef[] = [];
   private readonly kindCounts = new Map<string, number>();
@@ -385,6 +399,7 @@ class AttemptRecorder {
     private readonly ctx: IdentityContext,
     private readonly stepSession: ArtifactStepSession,
     private readonly dedupeKey?: string,
+    private readonly maxFileBytes?: number,
   ) {}
 
   async write(
@@ -394,6 +409,7 @@ class AttemptRecorder {
   ): Promise<CapsuleFileRef> {
     const relPath = validateCapsulePath(path);
     const { bytes, mediaType } = await bodyToBytes(relPath, body);
+    this.assertFileSize(relPath, bytes.byteLength);
     const repoPath = `${filesBasePath(this.ctx.step.attemptDir)}/${relPath}`;
     const ref: CapsuleFileRef = {
       path: repoPath,
@@ -407,6 +423,9 @@ class AttemptRecorder {
     };
     this.stepSession.stage(repoPath, bytes);
     this.refs[relPath] = ref;
+    if (options?.exposeAs !== undefined) {
+      this.exposedRefs[options.exposeAs] = ref;
+    }
     return ref;
   }
 
@@ -462,6 +481,7 @@ class AttemptRecorder {
       : `${defaultName}.json`;
     const repoPath = `${effectDir}/${snapshotPath}`;
     const { bytes, mediaType } = await bodyToBytes(snapshotPath, body);
+    this.assertFileSize(repoPath, bytes.byteLength);
     const ref: CapsuleFileRef = {
       path: repoPath,
       ...(isSnapshotObject(snapshot) && snapshot.mediaType !== undefined
@@ -485,7 +505,21 @@ class AttemptRecorder {
   }
 
   fileRefs(): Record<string, CapsuleFileRef> {
+    return { ...this.exposedRefs };
+  }
+
+  private allFileRefs(): Record<string, CapsuleFileRef> {
     return { ...this.refs };
+  }
+
+  private assertFileSize(path: string, size: number): void {
+    if (this.maxFileBytes === undefined || size <= this.maxFileBytes) return;
+    throw new CapsuleError(
+      "INVALID_CAPSULE_REQUEST",
+      `Capsule file "${path}" is ${size} bytes; the configured limit is ` +
+        `${this.maxFileBytes} bytes. File bodies are buffered before commit, so ` +
+        `write a smaller file or record an external pointer. No commit was made.`,
+    );
   }
 
   buildManifest(
@@ -511,7 +545,8 @@ class AttemptRecorder {
       },
       input: { hash: step.inputHash },
       artifact,
-      files: this.fileRefs(),
+      files: this.allFileRefs(),
+      exposedFiles: this.fileRefs(),
       effects: this.effectRecords,
       output,
       startedAt: startedAt.toISOString(),
@@ -544,7 +579,7 @@ class AttemptRecorder {
           : {}),
       },
       input: { hash: step.inputHash },
-      files: this.fileRefs(),
+      files: this.allFileRefs(),
       effects: this.effectRecords,
       externalEffectPossible:
         this.effectRecords.length > 0 || step.idempotencyKey !== undefined,
@@ -576,7 +611,11 @@ async function stageIndexEntry(
   stepSession.stage(RUN_INDEX_PATH, appendIndexEntry(index, entry));
 }
 
-function serializeOutput(capsuleName: string, output: unknown): Uint8Array {
+function serializeOutput(
+  capsuleName: string,
+  output: unknown,
+  maxOutputBytes: number,
+): Uint8Array {
   let json: string;
   try {
     json = JSON.stringify(output ?? null, null, 2) + "\n";
@@ -589,11 +628,11 @@ function serializeOutput(capsuleName: string, output: unknown): Uint8Array {
     );
   }
   const bytes = encoder.encode(json);
-  if (bytes.byteLength > MAX_OUTPUT_BYTES) {
+  if (bytes.byteLength > maxOutputBytes) {
     throw new CapsuleError(
       "INVALID_CAPSULE_REQUEST",
       `Capsule "${capsuleName}" returned ${bytes.byteLength} bytes of output; the limit is ` +
-        `${MAX_OUTPUT_BYTES} bytes because output is stored as Workflow state. ` +
+        `${maxOutputBytes} bytes because output is stored as Workflow state. ` +
         `Write large content with files.write() and return its path instead. ` +
         `All files written before this error were not committed.`,
     );
@@ -642,13 +681,14 @@ function refsFromResolved<Output>(
       attempt: resolved.manifest.step.attempt,
     },
     artifact: {
+      adapter: backendKind,
       backend: backendKind,
       repo: session.repo,
       branch: session.branch,
       commit: resolved.commit,
       ...(resolved.parent !== undefined ? { parent: resolved.parent } : {}),
     },
-    files: { ...resolved.manifest.files },
+    files: { ...(resolved.manifest.exposedFiles ?? {}) },
     effects: resolved.manifest.effects.map((effect) => ({
       kind: effect.kind,
       path: effect.path,
@@ -662,6 +702,7 @@ function refsFromResolved<Output>(
       ...(effect.response !== undefined ? { response: effect.response } : {}),
     })),
     output: resolved.manifest.output as Output,
+    effectCount: resolved.manifest.effects.length,
     manifestPath: manifestPath(
       attemptDirPath(
         stepDirName(resolved.manifest.step.count, resolved.manifest.step.name),
@@ -672,4 +713,32 @@ function refsFromResolved<Output>(
       ? { diff: { base: resolved.parent, head: resolved.commit } }
       : {}),
   };
+}
+
+function optionalLimits(options: CreateCapsulesOptions): {
+  readonly maxOutputBytes?: number;
+  readonly maxFileBytes?: number;
+} {
+  return {
+    ...(options.maxOutputBytes !== undefined
+      ? { maxOutputBytes: options.maxOutputBytes }
+      : {}),
+    ...(options.maxFileBytes !== undefined ? { maxFileBytes: options.maxFileBytes } : {}),
+  };
+}
+
+function normalizeCaptureSpec<Input, Output>(
+  specOrOptions: CapsuleSpec<Input, Output> | CaptureOptions<Input>,
+  run: ((ctx: CapsuleRunContext<Input>) => Promise<Output>) | undefined,
+): CapsuleSpec<Input, Output> {
+  if (run !== undefined) {
+    return { ...specOrOptions, run } as CapsuleSpec<Input, Output>;
+  }
+  if ("run" in specOrOptions && typeof specOrOptions.run === "function") {
+    return specOrOptions as CapsuleSpec<Input, Output>;
+  }
+  throw invalidRequest(
+    "capture() requires a producer callback. Pass capture(options, async (ctx) => ...), " +
+      "or include `run` on the capture spec.",
+  );
 }

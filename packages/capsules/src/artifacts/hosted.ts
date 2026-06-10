@@ -4,9 +4,8 @@ import type { CommittedStep } from "../core/types.js";
 import type { RepoHandle, TreeStore } from "./tree-backend.js";
 
 /**
- * HTTP artifact store shared by `Artifacts.hosted(...)` and
- * `Artifacts.localBridge(...)`. The service on the other side owns the Git
- * repos (for example an ArtifactFS mount plus native git, or a hosted
+ * HTTP artifact store shared by remote HTTP-backed adapters. The service owns
+ * the Git repos (for example an ArtifactFS mount plus native git, or a hosted
  * artifact API) and implements this protocol:
  *
  *   POST /runs/open                { repo, branch, initFiles, initMessage } -> { repo, branch, head? }
@@ -14,9 +13,10 @@ import type { RepoHandle, TreeStore } from "./tree-backend.js";
  *   GET  /runs/:repo/file?path=<p>                                         -> 200 bytes | 404
  *   POST /runs/:repo/commit        { files, message }                      -> { commit, parent? }
  *
- * `files`/`initFiles` are `{ [path]: base64 }` maps. This JSON protocol is
- * the MVP shape; a streaming upload route is the planned path for large
- * trees that should not be buffered in memory.
+ * File bytes are base64-encoded into JSON objects keyed by repo path, for
+ * example `{ files: { "steps/.../output.txt": "aGVsbG8=" } }`. The full JSON
+ * request is built in memory before `fetch()`, so this adapter is not for very
+ * large commits.
  */
 export type HttpStoreOptions = {
   readonly url: string;
@@ -25,7 +25,7 @@ export type HttpStoreOptions = {
 };
 
 export function httpStore(
-  kind: "hosted" | "local-bridge",
+  kind: "hosted" | "local-bridge" | "remote",
   options: HttpStoreOptions,
 ): TreeStore {
   const base = options.url.replace(/\/+$/, "");

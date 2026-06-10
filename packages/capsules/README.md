@@ -25,24 +25,27 @@ npm i workflow-capsules
 
 ```ts
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
-import { Artifacts, Capsules } from "workflow-capsules";
+import { createCapsules } from "workflow-capsules";
+import { cloudflare } from "workflow-capsules/cloudflare";
 
 export class ChargeCustomerWorkflow extends WorkflowEntrypoint<Env, ChargePayload> {
   async run(event: WorkflowEvent<ChargePayload>, step: WorkflowStep) {
-    const capsules = Capsules.layer(Artifacts.workers(this.env.ARTIFACTS));
+    const capsules = createCapsules({ adapter: cloudflare(this.env.ARTIFACTS) });
 
     const charge = await step.do("charge customer", async (ctx) => {
-      return capsules.capture({
-        workflow: event,
-        step: ctx,
-        name: "stripe-payment-intent",
-        input: {
-          customerId: event.payload.customerId,
-          amount: event.payload.amount,
-          currency: event.payload.currency,
+      return capsules.capture(
+        {
+          workflow: event,
+          step: ctx,
+          name: "stripe-payment-intent",
+          input: {
+            customerId: event.payload.customerId,
+            amount: event.payload.amount,
+            currency: event.payload.currency,
+          },
+          idempotencyKey: `wf:${event.instanceId}:charge-customer:${ctx.step.count}`,
         },
-        idempotencyKey: `wf:${event.instanceId}:charge-customer:${ctx.step.count}`,
-        run: async ({ input, effects, idempotencyKey }) => {
+        async ({ input, effects, idempotencyKey }) => {
           const response = await fetch("https://api.stripe.com/v1/payment_intents", {
             method: "POST",
             headers: {
@@ -62,7 +65,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<Env, ChargePayloa
             externalId: body.id,
             httpStatus: response.status,
             request: { ...input, idempotencyKey },
-            response: body,
+            response: { id: body.id, status: body.status },
           });
           if (!response.ok) {
             throw new Error(`Stripe payment_intent.create failed with ${response.status}`);
@@ -73,7 +76,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<Env, ChargePayloa
             effectPath: effect.path,
           };
         },
-      });
+      );
     });
 
     // Workflow state stores only refs; the file tree lives in Artifacts.
@@ -82,16 +85,20 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<Env, ChargePayloa
 }
 ```
 
-## Artifact Layers
+## Adapters
 
-Pick the backend once; Workflow step bodies never change across layers.
+Pick the adapter once; Workflow step bodies never change across adapters.
 
 ```ts
-Capsules.layer(Artifacts.workers(env.ARTIFACTS));                                    // Workers binding + Git push
-Capsules.layer(Artifacts.memory());                                                  // tests and examples
-Capsules.layer(Artifacts.localNode({ mountRoot: "/tmp/capsules" }));                 // Node + native git
-Capsules.layer(Artifacts.localBridge({ url: "http://127.0.0.1:8789" }));             // wrangler dev -> local bridge
-Capsules.layer(Artifacts.hosted({ url: "https://artifacts.example.com", token }));   // self-hosted HTTP service
+import { cloudflare } from "workflow-capsules/cloudflare";
+import { memory } from "workflow-capsules/memory";
+import { local } from "workflow-capsules/local";
+import { remote } from "workflow-capsules/remote";
+
+createCapsules({ adapter: cloudflare(env.ARTIFACTS) });
+createCapsules({ adapter: memory() });
+createCapsules({ adapter: local({ root: "/tmp/capsules" }) });
+createCapsules({ adapter: remote({ url: "http://127.0.0.1:8789", token }) });
 ```
 
 For the local bridge, run a Node service backed by the same protocol:
@@ -108,7 +115,7 @@ The bridge writes plain Git repos under `mountRoot`; inspect them with `git log`
 
 ## Core API
 
-### `capsules.capture(spec)`
+### `capsules.capture(options, run)`
 
 Captures one side-effectful step. Requires `workflow` (the `WorkflowEvent`) and `step` (the `WorkflowStepContext` that `step.do()` passes to its callback) so Capsule can derive run identity, step identity, and attempt numbers.
 
@@ -118,19 +125,21 @@ Returns `CapsuleRefs<Output>`:
 {
   capsule:  { name, id, inputHash, idempotencyKey?, dedupeKey? },
   workflow: { name, instanceId, stepName, stepCount, attempt },
-  artifact: { backend, repo, branch, commit, parent? },
-  files:    Record<string, { path, mediaType?, size?, digest? }>, // keyed by the path passed to files.write()
+  artifact: { adapter, repo, branch, commit, parent? },
+  files:    Record<string, { path, mediaType?, size?, digest? }>, // only files exposed with exposeAs
+  effects:  CapsuleEffectRef[],
+  effectCount: number,
   output:   Output,           // your small serializable result
   manifestPath: string,
   diff?:    { base, head },
 }
 ```
 
-Replay-safe: if the same step attempt with the same input hash is already committed, `capture()` returns the existing refs without re-running the producer. A committed attempt with a *different* input hash raises a non-retryable `CAPSULE_CONFLICT`.
+Replay-safe: if the same logical step with the same input hash is already committed, `capture()` returns the existing refs without re-running the producer. A committed logical step with a *different* input hash raises a non-retryable `CAPSULE_CONFLICT`.
 
 ### `files.write(path, body, options?)`
 
-The single file-writing primitive. Accepts JSON-like objects, strings, `Uint8Array`, `ArrayBuffer`, `Blob`, and `ReadableStream<Uint8Array>`. Paths are relative, `/`-separated, and traversal-free.
+The single file-writing primitive. Accepts JSON-like objects, strings, `Uint8Array`, `ArrayBuffer`, `Blob`, and `ReadableStream<Uint8Array>`. Paths are relative, `/`-separated, and traversal-free. File bodies are buffered before commit; do not pass very large files or streams.
 
 ### `effects.record(kind, record)`
 
@@ -180,7 +189,7 @@ steps/
         input.hash.json
         output.json
         effects/
-          stripe-payment-intent-create/
+          001-stripe-payment-intent-create/
             record.json
             request.json
             response.json
@@ -198,7 +207,7 @@ git show c3:steps/001-charge-customer/attempts/1/manifest.json
 
 ## Failure Behavior
 
-When the producer throws, Capsule rethrows the original error so `step.do()` retry semantics keep working. If the attempt crossed a side-effect boundary (files written, effects recorded, or an idempotency key present), Capsule first commits a `failure.json` recording the error, retryability, and whether an external effect may have succeeded. Retries write under distinct `attempts/<n>/` paths.
+When the producer throws, Capsule rethrows the original error so `step.do()` retry semantics keep working. If the attempt crossed a side-effect boundary (files written, effects recorded, or an idempotency key present), Capsule first commits a `failure.json` recording the error, retryability, and whether an external effect may have succeeded. If a prior attempt already committed a success for the same logical step and input, a later retry reuses that success instead of re-running the producer.
 
 Capsule's own errors are tagged `CapsuleError`s with codes `INVALID_CAPSULE_REQUEST`, `CAPSULE_CONFLICT`, `BACKEND_UNAVAILABLE`, `BACKEND_WRITE_FAILED`, and `OPERATION_FAILED`, plus a `retryable` flag.
 
@@ -211,11 +220,10 @@ JavaScript Workflows can return a `ReadableStream<Uint8Array>` from `step.do()` 
 - side-effect audit trails for providers (payments, AI, email, webhooks)
 - artifacts that outlive Workflow state retention or are consumed by other systems
 
-## MVP Caveats
+## Limits
 
-- `Artifacts.workers(...)` buffers a short-lived working tree in Worker memory via `isomorphic-git`; fine for small-to-medium artifacts, not for huge dumps. Use the local bridge or hosted layer for large trees or native-git-backed writes.
-- `dedupe.mode: "reuse-output"` is reserved; `"record-reuse"` records the dedupe key in manifests today.
-- Stream bodies passed to `files.write()` are buffered before commit; the hosted protocol is the path to true streaming writes.
+- `cloudflare(...)` buffers a short-lived working tree in Worker memory via `isomorphic-git`; fine for small-to-medium artifacts, not for huge dumps.
+- Stream bodies passed to `files.write()` are buffered before commit.
 
 ## Development
 

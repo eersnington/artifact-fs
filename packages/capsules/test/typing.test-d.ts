@@ -1,5 +1,6 @@
 import { expectTypeOf } from "vitest";
-import { Artifacts, Capsules, type CapsuleRefs } from "../src/index.js";
+import { Capsules, createCapsules, type CapsuleRefs } from "../src/index.js";
+import { memory } from "../src/memory.js";
 
 type BuildInput = {
   source: string;
@@ -41,7 +42,7 @@ const spec = buildArtifacts.with({
 
 expectTypeOf(spec.input).toEqualTypeOf<BuildInput>();
 
-const capsules = Capsules.layer(Artifacts.memory());
+const capsules = createCapsules({ adapter: memory() });
 expectTypeOf(capsules.capture(spec)).toEqualTypeOf<
   Promise<CapsuleRefs<BuildOutput>>
 >();

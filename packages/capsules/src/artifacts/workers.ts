@@ -158,7 +158,7 @@ export function workersStore(
       if (remote === undefined) {
         throw invalidRequest(
           `Artifacts repo "${name}" exists but the binding handle did not expose a remote URL. ` +
-            `Pass Artifacts.workers(binding, { remoteFor: (repo) => url }) so Capsule can push to it.`,
+            `Pass cloudflare(binding, { remoteFor: (repo) => url }) so Capsule can push to it.`,
         );
       }
       const token = await handle.createToken("write", ttl);

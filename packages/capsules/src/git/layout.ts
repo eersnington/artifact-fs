@@ -2,7 +2,7 @@ import { slugify } from "../core/validation.js";
 import type { StepIdentity } from "../core/types.js";
 
 /**
- * Canonical run-repo layout. Every artifact layer writes the same tree:
+ * Canonical run-repo layout. Every adapter writes the same tree:
  *
  *   .capsule/run.json
  *   .capsule/index.json

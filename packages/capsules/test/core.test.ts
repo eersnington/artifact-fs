@@ -1,14 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  Artifacts,
   CapsuleError,
-  Capsules,
-  type ArtifactLayer,
+  createCapsules,
+  type CapsuleAdapter,
   type WorkflowEventLike,
   type WorkflowStepContextLike,
 } from "../src/index.js";
+import { memory } from "../src/memory.js";
 import { DEFAULT_BRANCH } from "../src/git/layout.js";
-import type { InternalArtifactLayer, StandardSchemaV1 } from "../src/core/types.js";
+import type { InternalCapsuleAdapter, StandardSchemaV1 } from "../src/core/types.js";
 import { stableHash } from "../src/internal/hash.js";
 
 const decoder = new TextDecoder();
@@ -33,11 +33,11 @@ function step(
 }
 
 async function readJson<T>(
-  layer: ArtifactLayer,
+  adapter: CapsuleAdapter,
   refs: { artifact: { repo: string }; workflow: { name: string; instanceId: string } },
   path: string,
 ): Promise<T> {
-  const session = await internalLayer(layer).backend.openRun({
+  const session = await internalAdapter(adapter).backend.openRun({
     workflowName: refs.workflow.name,
     instanceId: refs.workflow.instanceId,
     repoName: refs.artifact.repo,
@@ -51,11 +51,11 @@ async function readJson<T>(
 }
 
 async function readText(
-  layer: ArtifactLayer,
+  adapter: CapsuleAdapter,
   refs: { artifact: { repo: string }; workflow: { name: string; instanceId: string } },
   path: string,
 ): Promise<string> {
-  const session = await internalLayer(layer).backend.openRun({
+  const session = await internalAdapter(adapter).backend.openRun({
     workflowName: refs.workflow.name,
     instanceId: refs.workflow.instanceId,
     repoName: refs.artifact.repo,
@@ -68,14 +68,14 @@ async function readText(
   return decoder.decode(bytes);
 }
 
-function internalLayer(layer: ArtifactLayer): InternalArtifactLayer {
-  return layer as InternalArtifactLayer;
+function internalAdapter(adapter: CapsuleAdapter): InternalCapsuleAdapter {
+  return adapter as InternalCapsuleAdapter;
 }
 
 describe("Capsules.capture with memory artifacts", () => {
   it("writes file refs, output, manifests, and effect audit records", async () => {
-    const layer = Artifacts.memory();
-    const capsules = Capsules.layer(layer);
+    const adapter = memory();
+    const capsules = createCapsules({ adapter });
 
     const refs = await capsules.capture({
       workflow: workflow(),
@@ -92,7 +92,9 @@ describe("Capsules.capture with memory artifacts", () => {
           id: "pi_123",
           object: "payment_intent",
         });
-        await files.write("output/answer.md", "approved\n");
+        await files.write("output/answer.md", "approved\n", {
+          exposeAs: "answer",
+        });
         await files.write("binary/raw.bin", new Uint8Array([1, 2, 3]));
         await files.write(
           "stream/chunk.txt",
@@ -124,22 +126,12 @@ describe("Capsules.capture with memory artifacts", () => {
       },
     });
 
-    expect(refs.artifact.backend).toBe("memory");
+    expect(refs.artifact.adapter).toBe("memory");
     expect(refs.artifact.commit).toMatch(/^[a-f0-9]{40}$/);
     expect(refs.artifact.parent).toMatch(/^[a-f0-9]{40}$/);
     expect(refs.output.paymentIntentId).toBe("pi_123");
-    expect(Object.keys(refs.files).sort()).toEqual([
-      "binary/raw.bin",
-      "blob/plain.txt",
-      "output/answer.md",
-      "request.json",
-      "response.json",
-      "stream/chunk.txt",
-    ]);
-    expect(refs.files["response.json"]?.mediaType).toBe(
-      "application/json",
-    );
-    expect(refs.files["binary/raw.bin"]?.digest).toMatch(/^sha256:/);
+    expect(Object.keys(refs.files)).toEqual(["answer"]);
+    expect(refs.files.answer?.digest).toMatch(/^sha256:/);
 
     const manifest = await readJson<{
       effects: Array<{
@@ -150,14 +142,24 @@ describe("Capsules.capture with memory artifacts", () => {
         response?: { path: string; digest?: string };
       }>;
       files: Record<string, unknown>;
+      exposedFiles: Record<string, unknown>;
       artifact: { parent?: string };
       output: { paymentIntentId: string };
-    }>(layer, refs, refs.manifestPath);
+    }>(adapter, refs, refs.manifestPath);
     expect(manifest.artifact.parent).toBe(refs.artifact.parent);
     expect(manifest.output.paymentIntentId).toBe("pi_123");
     expect(manifest.effects[0]?.path).toContain(
-      "effects/stripe-payment-intent-create/record.json",
+      "effects/001-stripe-payment-intent-create/record.json",
     );
+    expect(Object.keys(manifest.files).sort()).toEqual([
+      "binary/raw.bin",
+      "blob/plain.txt",
+      "output/answer.md",
+      "request.json",
+      "response.json",
+      "stream/chunk.txt",
+    ]);
+    expect(Object.keys(manifest.exposedFiles)).toEqual(["answer"]);
     expect(manifest.effects[0]?.externalId).toBe("pi_123");
     expect(manifest.effects[0]?.request?.digest).toMatch(/^sha256:/);
     expect(manifest.effects[0]?.response?.digest).toMatch(/^sha256:/);
@@ -170,45 +172,48 @@ describe("Capsules.capture with memory artifacts", () => {
       httpStatus?: number;
       request?: { path: string };
       response?: { path: string };
-    }>(layer, refs, manifest.effects[0]!.path);
+    }>(adapter, refs, manifest.effects[0]!.path);
     expect(effect.workflow.instanceId).toBe("invoice-77");
     expect(effect.step).toEqual({ name: "charge customer", count: 1, attempt: 1 });
     expect(effect.idempotencyKey).toBe("wf:invoice-77:charge-customer:1");
     expect(effect).toMatchObject({ externalId: "pi_123", httpStatus: 200 });
-    await expect(readJson(layer, refs, effect.request!.path)).resolves.toMatchObject({
+    await expect(readJson(adapter, refs, effect.request!.path)).resolves.toMatchObject({
       customerId: "cus_123",
     });
-    await expect(readJson(layer, refs, effect.response!.path)).resolves.toMatchObject({
+    await expect(readJson(adapter, refs, effect.response!.path)).resolves.toMatchObject({
       id: "pi_123",
     });
 
     await expect(
-      readText(layer, refs, refs.files["stream/chunk.txt"]!.path),
+      readText(adapter, refs, "steps/001-charge-customer/attempts/1/files/stream/chunk.txt"),
     ).resolves.toBe("streamed");
     await expect(
-      readText(layer, refs, refs.files["blob/plain.txt"]!.path),
+      readText(adapter, refs, "steps/001-charge-customer/attempts/1/files/blob/plain.txt"),
     ).resolves.toBe("blob");
   });
 
   it("returns existing refs for the same committed step attempt and input", async () => {
-    const layer = Artifacts.memory();
-    const capsules = Capsules.layer(layer);
+    const capsules = createCapsules({ adapter: memory() });
     const run = vi.fn(async () => ({ path: "output/result.txt" }));
 
-    const first = await capsules.capture({
-      workflow: workflow(),
-      step: step("produce report"),
-      name: "report",
-      input: { reportId: "r1" },
+    const first = await capsules.capture(
+      {
+        workflow: workflow(),
+        step: step("produce report"),
+        name: "report",
+        input: { reportId: "r1" },
+      },
       run,
-    });
-    const second = await capsules.capture({
-      workflow: workflow(),
-      step: step("produce report"),
-      name: "report",
-      input: { reportId: "r1" },
+    );
+    const second = await capsules.capture(
+      {
+        workflow: workflow(),
+        step: step("produce report"),
+        name: "report",
+        input: { reportId: "r1" },
+      },
       run,
-    });
+    );
 
     expect(second.artifact.commit).toBe(first.artifact.commit);
     expect(second.output).toEqual(first.output);
@@ -216,8 +221,7 @@ describe("Capsules.capture with memory artifacts", () => {
   });
 
   it("hashes the schema-validated input passed to run", async () => {
-    const layer = Artifacts.memory();
-    const capsules = Capsules.layer(layer);
+    const capsules = createCapsules({ adapter: memory() });
     const inputSchema = {
       "~standard": {
         version: 1,
@@ -243,8 +247,7 @@ describe("Capsules.capture with memory artifacts", () => {
   });
 
   it("raises a non-retryable conflict when an existing attempt has a different input hash", async () => {
-    const layer = Artifacts.memory();
-    const capsules = Capsules.layer(layer);
+    const capsules = createCapsules({ adapter: memory() });
 
     await capsules.capture({
       workflow: workflow(),
@@ -268,46 +271,44 @@ describe("Capsules.capture with memory artifacts", () => {
     } satisfies Partial<CapsuleError>);
   });
 
-  it("records retry attempts under distinct attempt directories", async () => {
-    const layer = Artifacts.memory();
-    const capsules = Capsules.layer(layer);
+  it("reuses a prior committed success across retry attempts", async () => {
+    const capsules = createCapsules({ adapter: memory() });
+    const run = vi.fn(async ({ files }) => {
+      await files.write("response/invoice.json", { id: "in_1" });
+      return { invoiceId: "in_1" };
+    });
 
     const firstAttempt = await capsules.capture({
       workflow: workflow(),
       step: step("create invoice", 1, 1),
       name: "invoice",
       input: { paymentIntentId: "pi_123" },
-      run: async ({ files }) => {
-        await files.write("response/invoice.json", { id: "in_1" });
-        return { invoiceId: "in_1" };
-      },
+      run,
     });
     const secondAttempt = await capsules.capture({
       workflow: workflow(),
       step: step("create invoice", 1, 2),
       name: "invoice",
       input: { paymentIntentId: "pi_123" },
-      run: async ({ files }) => {
-        await files.write("response/invoice.json", { id: "in_2" });
-        return { invoiceId: "in_2" };
-      },
+      run,
     });
 
     expect(firstAttempt.manifestPath).toContain("attempts/1/manifest.json");
-    expect(secondAttempt.manifestPath).toContain("attempts/2/manifest.json");
-    expect(secondAttempt.artifact.parent).toBe(firstAttempt.artifact.commit);
-    expect(secondAttempt.output.invoiceId).toBe("in_2");
+    expect(secondAttempt.manifestPath).toContain("attempts/1/manifest.json");
+    expect(secondAttempt.artifact.commit).toBe(firstAttempt.artifact.commit);
+    expect(secondAttempt.output.invoiceId).toBe("in_1");
+    expect(run).toHaveBeenCalledTimes(1);
 
     const inspected = await capsules.inspectRun({
       workflowName: "ChargeCustomerWorkflow",
       instanceId: "invoice-77",
     });
-    expect(inspected.entries.map((entry) => entry.attempt)).toEqual([1, 2]);
+    expect(inspected.entries.map((entry) => entry.attempt)).toEqual([1]);
   });
 
   it("writes a failure manifest when the producer crossed an effect boundary", async () => {
-    const layer = Artifacts.memory();
-    const capsules = Capsules.layer(layer);
+    const adapter = memory();
+    const capsules = createCapsules({ adapter });
 
     await expect(
       capsules.capture({
@@ -338,7 +339,7 @@ describe("Capsules.capture with memory artifacts", () => {
       effects: Array<{ externalId?: string }>;
       error: { message: string; retryable: boolean };
     }>(
-      layer,
+      adapter,
       {
         artifact: { repo: inspected.repo },
         workflow: { name: "ChargeCustomerWorkflow", instanceId: "invoice-77" },
@@ -351,8 +352,7 @@ describe("Capsules.capture with memory artifacts", () => {
   });
 
   it("rejects traversal paths before committing", async () => {
-    const layer = Artifacts.memory();
-    const capsules = Capsules.layer(layer);
+    const capsules = createCapsules({ adapter: memory() });
 
     await expect(
       capsules.capture({

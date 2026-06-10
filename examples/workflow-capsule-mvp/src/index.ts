@@ -3,7 +3,8 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers";
-import { Artifacts as ArtifactLayers, Capsules } from "workflow-capsules";
+import { createCapsules } from "workflow-capsules";
+import { cloudflare } from "workflow-capsules/cloudflare";
 
 type ChargePayload = {
   customerId: string;
@@ -39,21 +40,23 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
   ChargePayload
 > {
   async run(event: WorkflowEvent<ChargePayload>, step: WorkflowStep) {
-    const capsules = Capsules.layer(ArtifactLayers.workers(this.env.ARTIFACTS));
+    const capsules = createCapsules({ adapter: cloudflare(this.env.ARTIFACTS) });
     const stripeBaseUrl = event.payload.stripeBaseUrl ?? "https://api.stripe.com";
 
     const charge = await step.do("charge customer", async (ctx) => {
-      return capsules.capture({
-        workflow: event,
-        step: ctx,
-        name: "stripe-payment-intent",
-        input: {
-          customerId: event.payload.customerId,
-          amount: event.payload.amount,
-          currency: event.payload.currency,
+      return capsules.capture(
+        {
+          workflow: event,
+          step: ctx,
+          name: "stripe-payment-intent",
+          input: {
+            customerId: event.payload.customerId,
+            amount: event.payload.amount,
+            currency: event.payload.currency,
+          },
+          idempotencyKey: `wf:${event.instanceId}:charge-customer:${ctx.step.count}`,
         },
-        idempotencyKey: `wf:${event.instanceId}:charge-customer:${ctx.step.count}`,
-        run: async ({ input, effects, idempotencyKey }) => {
+        async ({ input, effects, idempotencyKey }) => {
           const requestBody = new URLSearchParams({
             customer: input.customerId,
             amount: String(input.amount),
@@ -81,7 +84,11 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
               currency: input.currency,
               idempotencyKey,
             },
-            response: body,
+            response: {
+              id: body.id,
+              object: body.object,
+              status: body.status,
+            },
           });
           if (!response.ok) {
             throw new Error(
@@ -94,20 +101,22 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
             effectPath: effect.path,
           };
         },
-      });
+      );
     });
 
     const invoice = await step.do("create invoice", async (ctx) => {
-      return capsules.capture({
-        workflow: event,
-        step: ctx,
-        name: "stripe-invoice",
-        input: {
-          customerId: event.payload.customerId,
-          paymentIntentId: charge.output.paymentIntentId,
+      return capsules.capture(
+        {
+          workflow: event,
+          step: ctx,
+          name: "stripe-invoice",
+          input: {
+            customerId: event.payload.customerId,
+            paymentIntentId: charge.output.paymentIntentId,
+          },
+          idempotencyKey: `wf:${event.instanceId}:create-invoice:${ctx.step.count}`,
         },
-        idempotencyKey: `wf:${event.instanceId}:create-invoice:${ctx.step.count}`,
-        run: async ({ input, effects, idempotencyKey }) => {
+        async ({ input, effects, idempotencyKey }) => {
           const requestBody = new URLSearchParams({
             customer: input.customerId,
             metadata_payment_intent: input.paymentIntentId,
@@ -133,7 +142,12 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
               paymentIntentId: input.paymentIntentId,
               idempotencyKey,
             },
-            response: body,
+            response: {
+              id: body.id,
+              object: body.object,
+              status: body.status,
+              hosted_invoice_url: body.hosted_invoice_url,
+            },
           });
           if (!response.ok) {
             throw new Error(`Stripe invoice.create failed with HTTP ${response.status}`);
@@ -144,7 +158,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
             effectPath: effect.path,
           };
         },
-      });
+      );
     });
 
     return {

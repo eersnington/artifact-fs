@@ -1,9 +1,8 @@
-export { Capsules } from "./core/capsules.js";
-export { Artifacts } from "./artifacts/layers.js";
+export { Capsules, createCapsules, type CreateCapsulesOptions } from "./core/capsules.js";
 export { CapsuleError, type CapsuleErrorCode } from "./core/errors.js";
 
 export type {
-  ArtifactLayer,
+  CapsuleAdapter,
   CapsuleDedupe,
   CapsuleDefinition,
   CapsuleEffectRecordInput,
@@ -18,16 +17,17 @@ export type {
   CapsuleFiles,
   CapsuleRefs,
   CapsuleRunContext,
+  CaptureOptions,
   CapsuleSpec,
   CapsulesService,
   DefinedCapsule,
-  HostedArtifactLayer,
+  InternalCapsuleAdapter,
   InspectedRun,
-  LocalBridgeArtifactLayer,
-  LocalNodeArtifactLayer,
-  MemoryArtifactLayer,
   StandardSchemaV1,
-  WorkersArtifactLayer,
+  CloudflareAdapter,
+  MemoryAdapter,
+  LocalAdapter,
+  RemoteAdapter,
   WorkflowEventLike,
   WorkflowStepContextLike,
 } from "./core/types.js";

@@ -6,9 +6,7 @@ const encoder = new TextEncoder();
 /**
  * Convert a `files.write()` body into bytes plus an inferred media type.
  *
- * MVP caveat: stream bodies are buffered in memory before committing because
- * the in-Worker git path needs the whole tree. The hosted/bridge protocol is
- * the path to true streaming writes.
+ * Stream bodies are read into memory before committing.
  */
 export async function bodyToBytes(
   path: string,

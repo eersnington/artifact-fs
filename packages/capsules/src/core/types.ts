@@ -65,6 +65,12 @@ export type CapsuleJsonValue =
 export type CapsuleFileOptions = {
   /** Explicit media type. Inferred from the file extension when omitted. */
   readonly mediaType?: string;
+  /**
+   * Include this file in the compact `CapsuleRefs.files` object returned to
+   * Workflow state. All files are still recorded in `manifest.json`; expose
+   * only the small set callers need immediately.
+   */
+  readonly exposeAs?: string;
 };
 
 export type CapsuleFileRef = {
@@ -80,6 +86,9 @@ export type CapsuleFiles = {
    * Write an artifact file into durable Git history for this step attempt.
    * Capsule stores exactly the bytes passed here; callers are responsible for
    * shaping, omitting, or transforming sensitive data before writing.
+   *
+   * File bodies are buffered before committing. Do not pass very large streams
+   * or blobs; record a compact manifest or external pointer instead.
    */
   write(
     path: string,
@@ -138,13 +147,8 @@ export type CapsuleRunContext<Input> = {
 };
 
 export type CapsuleDedupe = {
+  /** Correlation key recorded in the manifest for external reuse analysis. */
   readonly key: string;
-  /**
-   * `record-reuse` records the dedupe key in the manifest so external tooling
-   * can correlate identical content across runs. `reuse-output` (skipping the
-   * producer) is reserved for a future cross-run content index.
-   */
-  readonly mode: "record-reuse" | "reuse-output";
 };
 
 export type CapsuleDefinition<Input, Output> = {
@@ -165,6 +169,8 @@ export type CapsuleSpec<Input, Output> = {
   readonly inputSchema?: StandardSchemaV1<unknown, Input>;
   run(ctx: CapsuleRunContext<Input>): Promise<Output>;
 };
+
+export type CaptureOptions<Input> = Omit<CapsuleSpec<Input, unknown>, "run">;
 
 export type DefinedCapsule<Input, Output> = {
   readonly name: string;
@@ -190,19 +196,20 @@ export type CapsuleRefs<Output = unknown> = {
     readonly attempt: number;
   };
   readonly artifact: {
-    readonly backend: string;
+    readonly adapter: string;
+    readonly backend?: string;
     readonly repo: string;
     readonly branch: string;
     readonly commit: string;
     readonly parent?: string;
   };
   /**
-   * Map of files written by the capsule, keyed by the capsule-relative path
-   * passed to `files.write()`. This is a plain record; it is not derived from
-   * `Output`.
+   * Compact map of files explicitly exposed with `files.write(..., {
+   * exposeAs })`. The complete file list is stored in the committed manifest.
   */
   readonly files: Record<string, CapsuleFileRef>;
   readonly effects: ReadonlyArray<CapsuleEffectRef>;
+  readonly effectCount?: number;
   readonly output: Output;
   readonly manifestPath: string;
   readonly diff?: {
@@ -246,6 +253,7 @@ export type StepManifest = {
     readonly parent?: string;
   };
   readonly files: Record<string, CapsuleFileRef>;
+  readonly exposedFiles?: Record<string, CapsuleFileRef>;
   readonly effects: ReadonlyArray<EffectRecord>;
   readonly output?: unknown;
   readonly startedAt: string;
@@ -393,21 +401,20 @@ export type ArtifactBackend = {
   ): Promise<void>;
 };
 
-/** Public artifact layer handle. Construct via the `Artifacts` namespace. */
-export type ArtifactLayer = {
+/** Public adapter handle. Construct via an adapter subpath module. */
+export type CapsuleAdapter = {
   readonly kind: string;
 };
 
-/** Internal artifact layer handle. Public consumers only see `ArtifactLayer`. */
-export type InternalArtifactLayer = ArtifactLayer & {
+/** Internal adapter handle with the backend implementation attached. */
+export type InternalCapsuleAdapter = CapsuleAdapter & {
   readonly backend: ArtifactBackend;
 };
 
-export type WorkersArtifactLayer = ArtifactLayer & { readonly kind: "workers-binding" };
-export type MemoryArtifactLayer = ArtifactLayer & { readonly kind: "memory" };
-export type LocalNodeArtifactLayer = ArtifactLayer & { readonly kind: "local-node" };
-export type LocalBridgeArtifactLayer = ArtifactLayer & { readonly kind: "local-bridge" };
-export type HostedArtifactLayer = ArtifactLayer & { readonly kind: "hosted" };
+export type CloudflareAdapter = CapsuleAdapter & { readonly kind: "cloudflare" };
+export type MemoryAdapter = CapsuleAdapter & { readonly kind: "memory" };
+export type LocalAdapter = CapsuleAdapter & { readonly kind: "local" };
+export type RemoteAdapter = CapsuleAdapter & { readonly kind: "remote" };
 
 export type InspectedRun = {
   readonly repo: string;
@@ -422,8 +429,10 @@ export type InspectedRun = {
 };
 
 export interface CapsulesService {
+  capture<Input, Output>(spec: CapsuleSpec<Input, Output>): Promise<CapsuleRefs<Output>>;
   capture<Input, Output>(
-    spec: CapsuleSpec<Input, Output>,
+    options: CaptureOptions<Input>,
+    run: (ctx: CapsuleRunContext<Input>) => Promise<Output>,
   ): Promise<CapsuleRefs<Output>>;
   inspectRun(target: {
     readonly workflowName: string;
