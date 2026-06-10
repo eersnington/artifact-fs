@@ -10,6 +10,9 @@
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"
   },
+  "dependencies": {
+    "workflow-capsules": "file:../../packages/capsules"
+  },
   "pnpm": {
     "ignoredBuiltDependencies": ["sharp"],
     "onlyBuiltDependencies": ["esbuild", "workerd"]
