@@ -1,5 +1,5 @@
-import { createTreeBackend } from "./artifacts/tree-backend.js";
-import { localNodeStore } from "./artifacts/local-node.js";
+import { createRepositoryBackend } from "./artifacts/tree-backend.js";
+import { localRepositoryStore } from "./artifacts/local-node.js";
 import type { InternalCapsuleAdapter, LocalAdapter } from "./core/types.js";
 
 export type LocalOptions = {
@@ -20,8 +20,8 @@ export type LocalOptions = {
 export function local(options: LocalOptions): LocalAdapter {
   return {
     kind: "local",
-    backend: createTreeBackend(
-      localNodeStore({
+    backend: createRepositoryBackend(
+      localRepositoryStore({
         mountRoot: options.root,
         ...(options.author !== undefined ? { author: options.author } : {}),
       }),

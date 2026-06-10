@@ -1,7 +1,7 @@
 import { encodeBase64 } from "@oslojs/encoding";
 import { CapsuleError } from "../core/errors.js";
 import type { CommittedStep } from "../core/types.js";
-import type { RepoHandle, TreeStore } from "./tree-backend.js";
+import type { RepositorySession, RepositoryStore } from "./tree-backend.js";
 
 /**
  * HTTP artifact store shared by remote HTTP-backed adapters. The service owns
@@ -18,37 +18,37 @@ import type { RepoHandle, TreeStore } from "./tree-backend.js";
  * request is built in memory before `fetch()`, so this adapter is not for very
  * large commits.
  */
-export type HttpStoreOptions = {
+export type RemoteHttpStoreOptions = {
   readonly url: string;
   readonly token?: string;
   readonly fetch?: typeof fetch;
 };
 
-export function httpStore(options: HttpStoreOptions): TreeStore {
-  const base = options.url.replace(/\/+$/, "");
-  const doFetch = options.fetch ?? fetch;
+export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStore {
+  const baseUrl = options.url.replace(/\/+$/, "");
+  const fetchImpl = options.fetch ?? fetch;
 
-  const request = async (
+  const sendRemoteRequest = async (
     method: "GET" | "POST",
-    path: string,
-    body?: unknown,
+    route: string,
+    jsonBody?: unknown,
   ): Promise<Response> => {
     let response: Response;
     try {
-      response = await doFetch(`${base}${path}`, {
+      response = await fetchImpl(`${baseUrl}${route}`, {
         method,
         headers: {
-          ...(body !== undefined ? { "content-type": "application/json" } : {}),
+          ...(jsonBody !== undefined ? { "content-type": "application/json" } : {}),
           ...(options.token !== undefined
             ? { authorization: `Bearer ${options.token}` }
             : {}),
         },
-        ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+        ...(jsonBody !== undefined ? { body: JSON.stringify(jsonBody) } : {}),
       });
     } catch (error) {
       throw new CapsuleError(
         "BACKEND_UNAVAILABLE",
-        `Could not reach the remote artifact service at ${base} (${method} ${path}): ` +
+        `Could not reach the remote artifact service at ${baseUrl} (${method} ${route}): ` +
           `${error instanceof Error ? error.message : String(error)}. No commit was made. ` +
           "Check the service URL and network access.",
         { cause: error },
@@ -57,12 +57,15 @@ export function httpStore(options: HttpStoreOptions): TreeStore {
     return response;
   };
 
-  const requireOk = async (response: Response, what: string): Promise<void> => {
+  const assertRemoteResponseOk = async (
+    response: Response,
+    operation: string,
+  ): Promise<void> => {
     if (response.ok) return;
     const text = await response.text().catch(() => "");
     throw new CapsuleError(
       response.status >= 500 ? "BACKEND_UNAVAILABLE" : "BACKEND_WRITE_FAILED",
-      `Remote artifact service rejected ${what} with HTTP ${response.status}` +
+      `Remote artifact service rejected ${operation} with HTTP ${response.status}` +
         (text !== "" ? `: ${text.slice(0, 500)}` : ".") +
         " Committed history on the service is intact.",
     );
@@ -71,54 +74,57 @@ export function httpStore(options: HttpStoreOptions): TreeStore {
   return {
     kind: "remote",
 
-    async openRepo(name, init) {
-      const response = await request("POST", "/runs/open", {
-        repo: name,
+    async openRepository(repoName, init) {
+      const response = await sendRemoteRequest("POST", "/runs/open", {
+        repo: repoName,
         branch: init.branch,
-        initFiles: encodeFiles(init.initFiles),
+        initFiles: encodeFileMap(init.initFiles),
         initMessage: init.initMessage,
       });
-      await requireOk(response, `open of run repo "${name}"`);
-      return handleFor(name, init.branch);
+      await assertRemoteResponseOk(response, `open run repo "${repoName}"`);
+      return createRemoteRepositorySession(repoName, init.branch);
     },
   };
 
-  function handleFor(name: string, branch: string): RepoHandle {
-    const repoPath = `/runs/${encodeURIComponent(name)}`;
+  function createRemoteRepositorySession(
+    repoName: string,
+    branch: string,
+  ): RepositorySession {
+    const repoRoute = `/runs/${encodeURIComponent(repoName)}`;
     return {
-      repo: name,
+      repo: repoName,
       branch,
 
-      async head(): Promise<string | undefined> {
-        const response = await request("GET", `${repoPath}/head`);
-        await requireOk(response, "head lookup");
+      async readHead(): Promise<string | undefined> {
+        const response = await sendRemoteRequest("GET", `${repoRoute}/head`);
+        await assertRemoteResponseOk(response, "head lookup");
         const body = (await response.json()) as { head?: string };
         return body.head;
       },
 
       async readFile(path: string): Promise<Uint8Array | null> {
-        const response = await request(
+        const response = await sendRemoteRequest(
           "GET",
-          `${repoPath}/file?path=${encodeURIComponent(path)}`,
+          `${repoRoute}/file?path=${encodeURIComponent(path)}`,
         );
         if (response.status === 404) return null;
-        await requireOk(response, `read of ${path}`);
+        await assertRemoteResponseOk(response, `read ${path}`);
         return new Uint8Array(await response.arrayBuffer());
       },
 
-      async commit(input): Promise<CommittedStep> {
-        const response = await request("POST", `${repoPath}/commit`, {
-          files: encodeFiles(input.files),
+      async commitFiles(input): Promise<CommittedStep> {
+        const response = await sendRemoteRequest("POST", `${repoRoute}/commit`, {
+          files: encodeFileMap(input.files),
           message: input.message,
         });
-        await requireOk(response, "commit");
+        await assertRemoteResponseOk(response, "commit");
         return (await response.json()) as CommittedStep;
       },
     };
   }
 }
 
-function encodeFiles(files: ReadonlyMap<string, Uint8Array>): Record<string, string> {
+function encodeFileMap(files: ReadonlyMap<string, Uint8Array>): Record<string, string> {
   const encoded: Record<string, string> = {};
   for (const [path, bytes] of files) {
     encoded[path] = encodeBase64(bytes);

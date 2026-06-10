@@ -1,8 +1,8 @@
-import { httpStore, type HttpStoreOptions } from "./artifacts/hosted.js";
-import { createTreeBackend } from "./artifacts/tree-backend.js";
+import { remoteHttpStore, type RemoteHttpStoreOptions } from "./artifacts/remote-http.js";
+import { createRepositoryBackend } from "./artifacts/tree-backend.js";
 import type { InternalCapsuleAdapter, RemoteAdapter } from "./core/types.js";
 
-export type RemoteOptions = HttpStoreOptions;
+export type RemoteOptions = RemoteHttpStoreOptions;
 
 /**
  * Create a generic remote HTTP adapter for a self-hosted writer or hosted
@@ -15,6 +15,6 @@ export type RemoteOptions = HttpStoreOptions;
 export function remote(options: RemoteOptions): RemoteAdapter {
   return {
     kind: "remote",
-    backend: createTreeBackend(httpStore(options)),
+    backend: createRepositoryBackend(remoteHttpStore(options)),
   } as InternalCapsuleAdapter as RemoteAdapter;
 }

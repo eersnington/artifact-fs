@@ -1,9 +1,9 @@
 import type { CommittedStep } from "../core/types.js";
 import { sha256Hex, digestBytes } from "../internal/hash.js";
 import {
-  CommitQueue,
-  type RepoHandle,
-  type TreeStore,
+  SerialCommitQueue,
+  type RepositorySession,
+  type RepositoryStore,
 } from "./tree-backend.js";
 
 /**
@@ -24,47 +24,47 @@ type MemoryRepo = {
   readonly name: string;
   readonly branch: string;
   readonly commits: MemoryCommit[];
-  readonly queue: CommitQueue;
+  readonly commitQueue: SerialCommitQueue;
 };
 
-export type MemoryStore = TreeStore & {
+export type MemoryStore = RepositoryStore & {
   /** Test/debug access to raw repos. */
   repos(): ReadonlyMap<string, ReadonlyArray<MemoryCommit>>;
 };
 
-export function memoryStore(): MemoryStore {
-  const repos = new Map<string, MemoryRepo>();
+export function memoryRepositoryStore(): MemoryStore {
+  const repositories = new Map<string, MemoryRepo>();
 
   return {
     kind: "memory",
 
     repos() {
-      return new Map([...repos].map(([name, repo]) => [name, repo.commits]));
+      return new Map([...repositories].map(([name, repo]) => [name, repo.commits]));
     },
 
-    async openRepo(name, init) {
-      let repo = repos.get(name);
+    async openRepository(name, init) {
+      let repo = repositories.get(name);
       if (repo === undefined) {
         repo = {
           name,
           branch: init.branch,
           commits: [],
-          queue: new CommitQueue(),
+          commitQueue: new SerialCommitQueue(),
         };
-        repos.set(name, repo);
-        await commitTo(repo, init.initFiles, init.initMessage);
+        repositories.set(name, repo);
+        await commitMemoryFiles(repo, init.initFiles, init.initMessage);
       }
-      return handleFor(repo);
+      return createMemoryRepositorySession(repo);
     },
   };
 }
 
-function handleFor(repo: MemoryRepo): RepoHandle {
+function createMemoryRepositorySession(repo: MemoryRepo): RepositorySession {
   return {
     repo: repo.name,
     branch: repo.branch,
 
-    async head() {
+    async readHead() {
       return repo.commits.at(-1)?.sha;
     },
 
@@ -73,13 +73,13 @@ function handleFor(repo: MemoryRepo): RepoHandle {
       return head?.tree.get(path) ?? null;
     },
 
-    commit(input) {
-      return repo.queue.run(() =>
-        commitTo(repo, input.files, input.message),
+    commitFiles(input) {
+      return repo.commitQueue.run(() =>
+        commitMemoryFiles(repo, input.files, input.message),
       );
     },
 
-    async findCommitFor(path) {
+    async findCommitForPath(path) {
       for (let i = repo.commits.length - 1; i >= 0; i--) {
         const commit = repo.commits[i]!;
         if (commit.changedPaths.has(path)) {
@@ -94,7 +94,7 @@ function handleFor(repo: MemoryRepo): RepoHandle {
   };
 }
 
-async function commitTo(
+async function commitMemoryFiles(
   repo: MemoryRepo,
   files: ReadonlyMap<string, Uint8Array>,
   message: string,

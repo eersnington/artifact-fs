@@ -3,7 +3,10 @@ import {
   createCapsules,
 } from "../src/index.js";
 import { cloudflare, type ArtifactsBindingLike } from "../src/cloudflare.js";
-import type { GitOps, GitWorkspace } from "../src/artifacts/workers.js";
+import type {
+  GitWorkspaceFactory,
+  PushableGitWorkspace,
+} from "../src/artifacts/workers.js";
 
 const encoder = new TextEncoder();
 
@@ -16,7 +19,7 @@ describe("Cloudflare adapter", () => {
       password: string;
     }> = [];
     const workspace = fakeWorkspace();
-    const gitOps: GitOps = {
+    const gitWorkspaceFactory: GitWorkspaceFactory = {
       async open(input) {
         opened.push({
           remote: input.remote,
@@ -43,7 +46,9 @@ describe("Cloudflare adapter", () => {
       },
     };
 
-    const capsules = createCapsules({ adapter: cloudflare(binding, { gitOps }) });
+    const capsules = createCapsules({
+      adapter: cloudflare(binding, { gitWorkspaceFactory }),
+    });
     const refs = await capsules.capture({
       workflow: { workflowName: "ResearchWorkflow", instanceId: "research-001" },
       step: { step: { name: "create ai response", count: 1 }, attempt: 1 },
@@ -72,12 +77,12 @@ describe("Cloudflare adapter", () => {
   });
 });
 
-function fakeWorkspace(): GitWorkspace {
+function fakeWorkspace(): PushableGitWorkspace {
   const files = new Map<string, Uint8Array>();
   let head: string | undefined;
   let commitNumber = 0;
   return {
-    async head() {
+    async readHead() {
       return head;
     },
     async readFile(path) {

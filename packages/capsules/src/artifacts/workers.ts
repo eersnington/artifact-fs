@@ -2,9 +2,9 @@ import { CapsuleError, invalidRequest } from "../core/errors.js";
 import type { CommittedStep } from "../core/types.js";
 import { MemoryFS } from "../git/memory-fs.js";
 import {
-  CommitQueue,
-  type RepoHandle,
-  type TreeStore,
+  SerialCommitQueue,
+  type RepositorySession,
+  type RepositoryStore,
 } from "./tree-backend.js";
 
 /**
@@ -21,7 +21,7 @@ export type ArtifactsBindingLike = {
       readonly setDefaultBranch?: string;
     },
   ): Promise<ArtifactsCreatedRepoLike>;
-  get(name: string): Promise<ArtifactsRepoHandleLike>;
+  get(name: string): Promise<ArtifactsRepositoryLike>;
 };
 
 export type ArtifactsCreatedRepoLike = {
@@ -32,7 +32,7 @@ export type ArtifactsCreatedRepoLike = {
   readonly token: string;
 };
 
-export type ArtifactsRepoHandleLike = {
+export type ArtifactsRepositoryLike = {
   readonly name?: string;
   readonly remote?: string;
   createToken(
@@ -41,7 +41,7 @@ export type ArtifactsRepoHandleLike = {
   ): Promise<{ readonly plaintext: string }>;
 };
 
-export type WorkersStoreOptions = {
+export type CloudflareRepositoryStoreOptions = {
   /**
    * Resolve the git remote URL for an existing repo when the binding handle
    * does not expose one. Required only if `get()` results lack `remote`.
@@ -52,7 +52,7 @@ export type WorkersStoreOptions = {
   /** Commit author. Defaults to workflow-capsules. */
   readonly author?: { readonly name: string; readonly email: string };
   /** @internal Test seam; defaults to the isomorphic-git engine. */
-  readonly gitOps?: GitOps;
+  readonly gitWorkspaceFactory?: GitWorkspaceFactory;
 };
 
 /**
@@ -61,18 +61,18 @@ export type WorkersStoreOptions = {
  * expose direct file-write or commit methods. Contract tests inject a fake so
  * they run without the network.
  */
-export type GitOps = {
+export type GitWorkspaceFactory = {
   open(input: {
     readonly remote: string;
     readonly branch: string;
     readonly isNew: boolean;
     readonly auth: { readonly username: string; readonly password: string };
     readonly author: { readonly name: string; readonly email: string };
-  }): Promise<GitWorkspace>;
+  }): Promise<PushableGitWorkspace>;
 };
 
-export type GitWorkspace = {
-  head(): Promise<string | undefined>;
+export type PushableGitWorkspace = {
+  readHead(): Promise<string | undefined>;
   readFile(path: string): Promise<Uint8Array | null>;
   commitAndPush(
     files: ReadonlyMap<string, Uint8Array>,
@@ -85,72 +85,73 @@ const DEFAULT_AUTHOR = {
   email: "capsules@workflow.invalid",
 };
 
-export function workersStore(
+export function cloudflareRepositoryStore(
   binding: ArtifactsBindingLike,
-  options?: WorkersStoreOptions,
-): TreeStore {
-  const handles = new Map<string, Promise<RepoHandle>>();
-  const gitOps = options?.gitOps ?? isomorphicGitOps();
+  options?: CloudflareRepositoryStoreOptions,
+): RepositoryStore {
+  const repositories = new Map<string, Promise<RepositorySession>>();
+  const gitWorkspaceFactory =
+    options?.gitWorkspaceFactory ?? createIsomorphicGitWorkspaceFactory();
   const author = options?.author ?? DEFAULT_AUTHOR;
   const ttl = options?.tokenTtlSeconds ?? 900;
 
   return {
     kind: "workers-binding",
 
-    openRepo(name, init) {
-      let pending = handles.get(name);
+    openRepository(name, init) {
+      let pending = repositories.get(name);
       if (pending === undefined) {
-        pending = open(name, init).catch((error) => {
+        pending = openCloudflareRepository(name, init).catch((error) => {
           // Do not cache failures; the next call should retry.
-          handles.delete(name);
+          repositories.delete(name);
           throw error;
         });
-        handles.set(name, pending);
+        repositories.set(name, pending);
       }
       return pending;
     },
   };
 
-  async function open(
+  async function openCloudflareRepository(
     name: string,
     init: {
       readonly branch: string;
       readonly initFiles: ReadonlyMap<string, Uint8Array>;
       readonly initMessage: string;
     },
-  ): Promise<RepoHandle> {
-    const opened = await openOrCreateRepo(name, init.branch);
-    const workspace = await gitOps.open({
+  ): Promise<RepositorySession> {
+    const opened = await resolveArtifactsRepository(name, init.branch);
+    const workspace = await gitWorkspaceFactory.open({
       remote: opened.remote,
       branch: init.branch,
       isNew: opened.isNew,
-      auth: { username: "x", password: opened.tokenSecret },
+      auth: { username: "x", password: opened.writeToken },
       author,
     });
 
     // A repo can exist with no commits (created, then the init push failed).
-    if ((await workspace.head()) === undefined) {
+    if ((await workspace.readHead()) === undefined) {
       await workspace.commitAndPush(
         new Map(init.initFiles),
         init.initMessage,
       );
     }
 
-    const queue = new CommitQueue();
+    const commitQueue = new SerialCommitQueue();
     return {
       repo: name,
       branch: init.branch,
-      head: () => workspace.head(),
+      readHead: () => workspace.readHead(),
       readFile: (path) => workspace.readFile(path),
-      commit: (input) =>
-        queue.run(() => workspace.commitAndPush(input.files, input.message)),
+      commitFiles: (input) =>
+        commitQueue.run(() => workspace.commitAndPush(input.files, input.message)),
     };
   }
 
-  async function openOrCreateRepo(
+  async function resolveArtifactsRepository(
     name: string,
     branch: string,
-  ): Promise<{ remote: string; tokenSecret: string; isNew: boolean }> {
+  ): Promise<{ remote: string; writeToken: string; isNew: boolean }> {
     let getError: unknown;
     try {
       const handle = await binding.get(name);
@@ -162,7 +163,11 @@ export function workersStore(
         );
       }
       const token = await handle.createToken("write", ttl);
-      return { remote, tokenSecret: tokenSecret(token.plaintext), isNew: false };
+      return {
+        remote,
+        writeToken: stripTokenExpiry(token.plaintext),
+        isNew: false,
+      };
     } catch (error) {
       if (error instanceof CapsuleError) throw error;
       getError = error;
@@ -172,14 +177,14 @@ export function workersStore(
       const created = await binding.create(name, { setDefaultBranch: branch });
       return {
         remote: created.remote,
-        tokenSecret: tokenSecret(created.token),
+        writeToken: stripTokenExpiry(created.token),
         isNew: true,
       };
     } catch (createError) {
       throw new CapsuleError(
         "BACKEND_UNAVAILABLE",
-        `Could not open Artifacts repo "${name}": get() failed (${describe(getError)}) ` +
-          `and create() failed (${describe(createError)}). No commit was made. ` +
+        `Could not open Artifacts repo "${name}": get() failed (${safeErrorMessage(getError)}) ` +
+          `and create() failed (${safeErrorMessage(createError)}). No commit was made. ` +
           `Check the Artifacts binding configuration and namespace permissions, then retry.`,
         { cause: createError },
       );
@@ -188,15 +193,15 @@ export function workersStore(
 }
 
 /** Artifacts tokens carry expiry metadata: `art_v1_<secret>?expires=<unix>`. */
-function tokenSecret(token: string): string {
+function stripTokenExpiry(token: string): string {
   return token.split("?expires=")[0] ?? token;
 }
 
-function describe(error: unknown): string {
+function safeErrorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-function isomorphicGitOps(): GitOps {
+function createIsomorphicGitWorkspaceFactory(): GitWorkspaceFactory {
   return {
     async open(input) {
       const [{ default: git }, { default: http }] = await Promise.all([
@@ -226,14 +231,14 @@ function isomorphicGitOps(): GitOps {
         } catch (error) {
           throw new CapsuleError(
             "BACKEND_UNAVAILABLE",
-            `Cloning Artifacts repo from its remote failed: ${describe(error)}. ` +
+            `Cloning Artifacts repo from its remote failed: ${safeErrorMessage(error)}. ` +
               `No commit was made. The repo may still be initializing; retry the step.`,
             { cause: error },
           );
         }
       }
 
-      const head = async (): Promise<string | undefined> => {
+      const readHead = async (): Promise<string | undefined> => {
         try {
           return await git.resolveRef({ fs, dir, ref: "HEAD" });
         } catch {
@@ -242,7 +247,7 @@ function isomorphicGitOps(): GitOps {
       };
 
       return {
-        head,
+        readHead,
 
         async readFile(path: string): Promise<Uint8Array | null> {
           try {
@@ -259,7 +264,7 @@ function isomorphicGitOps(): GitOps {
           files: ReadonlyMap<string, Uint8Array>,
           message: string,
         ): Promise<CommittedStep> {
-          const parent = await head();
+          const parent = await readHead();
           try {
             for (const [path, bytes] of files) {
               await fs.promises.writeFile(`${dir}/${path}`, bytes);
@@ -286,7 +291,7 @@ function isomorphicGitOps(): GitOps {
           } catch (error) {
             throw new CapsuleError(
               "BACKEND_WRITE_FAILED",
-              `Committing/pushing capsule files to the Artifacts remote failed: ${describe(error)}. ` +
+              `Committing/pushing capsule files to the Artifacts remote failed: ${safeErrorMessage(error)}. ` +
                 `Previously pushed commits are intact. This is usually transient (token expiry or a ` +
                 `concurrent push); the step can be retried safely.`,
               { cause: error },

@@ -1,5 +1,5 @@
-import { createTreeBackend } from "./artifacts/tree-backend.js";
-import { memoryStore } from "./artifacts/memory.js";
+import { createRepositoryBackend } from "./artifacts/tree-backend.js";
+import { memoryRepositoryStore } from "./artifacts/memory.js";
 import type { InternalCapsuleAdapter, MemoryAdapter } from "./core/types.js";
 
 /**
@@ -14,6 +14,6 @@ import type { InternalCapsuleAdapter, MemoryAdapter } from "./core/types.js";
 export function memory(): MemoryAdapter {
   return {
     kind: "memory",
-    backend: createTreeBackend(memoryStore()),
+    backend: createRepositoryBackend(memoryRepositoryStore()),
   } as InternalCapsuleAdapter as MemoryAdapter;
 }

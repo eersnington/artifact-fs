@@ -12,32 +12,32 @@ import { RUN_INDEX_PATH, manifestPath } from "../git/layout.js";
 
 /**
  * Minimal storage contract that memory, Cloudflare, local, and remote
- * adapters implement. The adapter below turns any TreeStore into the canonical
+ * adapters implement. The adapter below turns any RepositoryStore into the canonical
  * ArtifactBackend, so commit layout and resolution logic exist exactly once.
  */
-export interface TreeStore {
+export interface RepositoryStore {
   readonly kind: string;
-  openRepo(
+  openRepository(
     name: string,
     init: {
       readonly branch: string;
       readonly initFiles: ReadonlyMap<string, Uint8Array>;
       readonly initMessage: string;
     },
-  ): Promise<RepoHandle>;
+  ): Promise<RepositorySession>;
 }
 
-export interface RepoHandle {
+export interface RepositorySession {
   readonly repo: string;
   readonly branch: string;
-  head(): Promise<string | undefined>;
+  readHead(): Promise<string | undefined>;
   readFile(path: string): Promise<Uint8Array | null>;
   /**
    * Write the given repo-absolute paths on top of the current head tree and
    * commit. Implementations must serialize concurrent commits to the same
    * repo (Workflows allows concurrent step.do() calls via Promise.all).
    */
-  commit(input: {
+  commitFiles(input: {
     readonly files: ReadonlyMap<string, Uint8Array>;
     readonly message: string;
   }): Promise<CommittedStep>;
@@ -46,32 +46,32 @@ export interface RepoHandle {
    * cheaply. Optional; the adapter falls back to the current head, which is
    * still an immutable SHA whose tree contains the path.
    */
-  findCommitFor?(path: string): Promise<CommittedStep | undefined>;
+  findCommitForPath?(path: string): Promise<CommittedStep | undefined>;
 }
 
 const decoder = new TextDecoder();
 
-type TreeRunSession = ArtifactRunSession & { readonly handle: RepoHandle };
-type TreeStepSession = ArtifactStepSession & {
+type BackendRunSession = ArtifactRunSession & { readonly repository: RepositorySession };
+type StagedStepSession = ArtifactStepSession & {
   readonly staged: Map<string, Uint8Array>;
 };
 
-export function createTreeBackend(store: TreeStore): ArtifactBackend {
+export function createRepositoryBackend(store: RepositoryStore): ArtifactBackend {
   return {
     kind: store.kind,
 
     async openRun(input: OpenRunInput): Promise<ArtifactRunSession> {
-      const handle = await store.openRepo(input.repoName, {
+      const repository = await store.openRepository(input.repoName, {
         branch: input.branch,
         initFiles: input.initFiles,
         initMessage: input.initMessage,
       });
-      const session: TreeRunSession = {
-        handle,
-        repo: handle.repo,
-        branch: handle.branch,
-        readFile: (path) => handle.readFile(path),
-        head: () => handle.head(),
+      const session: BackendRunSession = {
+        repository,
+        repo: repository.repo,
+        branch: repository.branch,
+        readFile: (path) => repository.readFile(path),
+        head: () => repository.readHead(),
       };
       return session;
     },
@@ -85,8 +85,8 @@ export function createTreeBackend(store: TreeStore): ArtifactBackend {
       const bytes = await session.readFile(path);
       if (bytes === null) return null;
       const manifest = JSON.parse(decoder.decode(bytes)) as StepManifest;
-      const handle = (session as TreeRunSession).handle;
-      const located = await handle.findCommitFor?.(path);
+      const repository = (session as BackendRunSession).repository;
+      const located = await repository.findCommitForPath?.(path);
       if (located !== undefined) {
         return { manifest, ...located };
       }
@@ -100,7 +100,7 @@ export function createTreeBackend(store: TreeStore): ArtifactBackend {
       step: StepIdentity,
     ): Promise<ArtifactStepSession> {
       const staged = new Map<string, Uint8Array>();
-      const session: TreeStepSession = {
+      const session: StagedStepSession = {
         identity: step,
         staged,
         stage(path, bytes) {
@@ -121,9 +121,9 @@ export function createTreeBackend(store: TreeStore): ArtifactBackend {
       step: ArtifactStepSession,
       input: { message: string },
     ): Promise<CommittedStep> {
-      const handle = (session as TreeRunSession).handle;
-      return handle.commit({
-        files: (step as TreeStepSession).staged,
+      const repository = (session as BackendRunSession).repository;
+      return repository.commitFiles({
+        files: (step as StagedStepSession).staged,
         message: input.message,
       });
     },
@@ -159,8 +159,8 @@ async function resolveCommittedManifestPath(
     : undefined;
 }
 
-/** Serialize async operations; used by stores to order concurrent commits. */
-export class CommitQueue {
+/** Serializes commit operations for a single repository. */
+export class SerialCommitQueue {
   private tail: Promise<unknown> = Promise.resolve();
 
   run<T>(operation: () => Promise<T>): Promise<T> {

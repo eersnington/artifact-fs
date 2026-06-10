@@ -1,8 +1,8 @@
-import { createTreeBackend } from "./artifacts/tree-backend.js";
+import { createRepositoryBackend } from "./artifacts/tree-backend.js";
 import {
-  workersStore,
+  cloudflareRepositoryStore,
   type ArtifactsBindingLike,
-  type WorkersStoreOptions,
+  type CloudflareRepositoryStoreOptions,
 } from "./artifacts/workers.js";
 import type { CloudflareAdapter, InternalCapsuleAdapter } from "./core/types.js";
 
@@ -17,12 +17,12 @@ import type { CloudflareAdapter, InternalCapsuleAdapter } from "./core/types.js"
  */
 export function cloudflare(
   binding: ArtifactsBindingLike,
-  options?: WorkersStoreOptions,
+  options?: CloudflareRepositoryStoreOptions,
 ): CloudflareAdapter {
   return {
     kind: "cloudflare",
-    backend: createTreeBackend(workersStore(binding, options)),
+    backend: createRepositoryBackend(cloudflareRepositoryStore(binding, options)),
   } as InternalCapsuleAdapter as CloudflareAdapter;
 }
 
-export type { ArtifactsBindingLike, WorkersStoreOptions };
+export type { ArtifactsBindingLike, CloudflareRepositoryStoreOptions };

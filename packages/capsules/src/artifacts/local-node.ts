@@ -1,9 +1,9 @@
 import { CapsuleError } from "../core/errors.js";
 import type { CommittedStep } from "../core/types.js";
 import {
-  CommitQueue,
-  type RepoHandle,
-  type TreeStore,
+  SerialCommitQueue,
+  type RepositorySession,
+  type RepositoryStore,
 } from "./tree-backend.js";
 
 /**
@@ -30,34 +30,34 @@ const DEFAULT_AUTHOR = {
   email: "capsules@workflow.invalid",
 };
 
-export function localNodeStore(options: LocalNodeOptions): TreeStore {
+export function localRepositoryStore(options: LocalNodeOptions): RepositoryStore {
   const author = options.author ?? DEFAULT_AUTHOR;
-  const handles = new Map<string, Promise<RepoHandle>>();
+  const repositories = new Map<string, Promise<RepositorySession>>();
 
   return {
     kind: "local-node",
 
-    openRepo(name, init) {
-      let pending = handles.get(name);
+    openRepository(name, init) {
+      let pending = repositories.get(name);
       if (pending === undefined) {
-        pending = open(name, init).catch((error) => {
-          handles.delete(name);
+        pending = openLocalRepository(name, init).catch((error) => {
+          repositories.delete(name);
           throw error;
         });
-        handles.set(name, pending);
+        repositories.set(name, pending);
       }
       return pending;
     },
   };
 
-  async function open(
+  async function openLocalRepository(
     name: string,
     init: {
       readonly branch: string;
       readonly initFiles: ReadonlyMap<string, Uint8Array>;
       readonly initMessage: string;
     },
-  ): Promise<RepoHandle> {
+  ): Promise<RepositorySession> {
     const [fs, path, { execFile }, { promisify }] = await Promise.all([
       import("node:fs/promises"),
       import("node:path"),
@@ -65,9 +65,9 @@ export function localNodeStore(options: LocalNodeOptions): TreeStore {
       import("node:util"),
     ]);
     const exec = promisify(execFile);
-    const repoDir = path.join(options.mountRoot, name);
+    const repositoryDir = path.join(options.mountRoot, name);
 
-    const git = async (...args: string[]): Promise<string> => {
+    const runGit = async (...args: string[]): Promise<string> => {
       try {
         const { stdout } = await exec(
           "git",
@@ -78,7 +78,7 @@ export function localNodeStore(options: LocalNodeOptions): TreeStore {
             `user.email=${author.email}`,
             ...args,
           ],
-          { cwd: repoDir },
+          { cwd: repositoryDir },
         );
         return stdout.trim();
       } catch (error) {
@@ -88,25 +88,27 @@ export function localNodeStore(options: LocalNodeOptions): TreeStore {
             : "";
         throw new CapsuleError(
           "BACKEND_WRITE_FAILED",
-          `git ${args[0]} failed in ${repoDir}: ${stderr || String(error)}. ` +
+          `git ${args[0]} failed in ${repositoryDir}: ${stderr || String(error)}. ` +
             `Committed history is intact; fix the repository state and retry the step.`,
           { cause: error },
         );
       }
     };
 
-    const writeFiles = async (files: ReadonlyMap<string, Uint8Array>): Promise<void> => {
+    const writeWorkingTreeFiles = async (
+      files: ReadonlyMap<string, Uint8Array>,
+    ): Promise<void> => {
       for (const [repoPath, bytes] of files) {
-        const target = path.join(repoDir, repoPath);
+        const target = path.join(repositoryDir, repoPath);
         await fs.mkdir(path.dirname(target), { recursive: true });
         await fs.writeFile(target, bytes);
       }
     };
 
-    const headSha = async (): Promise<string | undefined> => {
+    const readHeadCommit = async (): Promise<string | undefined> => {
       try {
         const { stdout } = await exec("git", ["rev-parse", "HEAD"], {
-          cwd: repoDir,
+          cwd: repositoryDir,
         });
         return stdout.trim();
       } catch {
@@ -114,48 +116,48 @@ export function localNodeStore(options: LocalNodeOptions): TreeStore {
       }
     };
 
-    await fs.mkdir(repoDir, { recursive: true });
-    const isRepo = await fs
-      .stat(path.join(repoDir, ".git"))
+    await fs.mkdir(repositoryDir, { recursive: true });
+    const gitDirectoryExists = await fs
+      .stat(path.join(repositoryDir, ".git"))
       .then(() => true)
       .catch(() => false);
-    if (!isRepo) {
-      await git("init", "-b", init.branch);
+    if (!gitDirectoryExists) {
+      await runGit("init", "-b", init.branch);
     }
-    if ((await headSha()) === undefined) {
-      await writeFiles(init.initFiles);
-      await git("add", "-A");
-      await git("commit", "-m", init.initMessage);
+    if ((await readHeadCommit()) === undefined) {
+      await writeWorkingTreeFiles(init.initFiles);
+      await runGit("add", "-A");
+      await runGit("commit", "-m", init.initMessage);
     }
 
-    const queue = new CommitQueue();
+    const commitQueue = new SerialCommitQueue();
     return {
       repo: name,
       branch: init.branch,
-      head: headSha,
+      readHead: readHeadCommit,
 
       async readFile(repoPath: string): Promise<Uint8Array | null> {
         try {
-          const data = await fs.readFile(path.join(repoDir, repoPath));
+          const data = await fs.readFile(path.join(repositoryDir, repoPath));
           return new Uint8Array(data);
         } catch (cause) {
           if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
           throw new CapsuleError(
             "BACKEND_WRITE_FAILED",
-            `Could not read ${repoPath} from local capsule repo ${repoDir}: ${String(cause)}. ` +
+            `Could not read ${repoPath} from local capsule repo ${repositoryDir}: ${String(cause)}. ` +
               `Committed history is intact; check local filesystem permissions and retry.`,
             { cause },
           );
         }
       },
 
-      commit(input): Promise<CommittedStep> {
-        return queue.run(async () => {
-          const parent = await headSha();
-          await writeFiles(input.files);
-          await git("add", "-A", "--", ...input.files.keys());
-          await git("commit", "-m", input.message);
-          const commit = await git("rev-parse", "HEAD");
+      commitFiles(input): Promise<CommittedStep> {
+        return commitQueue.run(async () => {
+          const parent = await readHeadCommit();
+          await writeWorkingTreeFiles(input.files);
+          await runGit("add", "-A", "--", ...input.files.keys());
+          await runGit("commit", "-m", input.message);
+          const commit = await runGit("rev-parse", "HEAD");
           return {
             commit,
             ...(parent !== undefined ? { parent } : {}),
@@ -163,9 +165,9 @@ export function localNodeStore(options: LocalNodeOptions): TreeStore {
         });
       },
 
-      async findCommitFor(repoPath: string): Promise<CommittedStep | undefined> {
+      async findCommitForPath(repoPath: string): Promise<CommittedStep | undefined> {
         try {
-          const logOutput = await git(
+          const logOutput = await runGit(
             "log",
             "-n",
             "1",
