@@ -68,7 +68,7 @@ export function safeEffectKind(kind: string): string {
     throw invalidRequest("Effect kind must not be empty.");
   }
   const safe = kind
-    .replace(/[^a-zA-Z0-9_-]+/g, "-")
+    .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .toLowerCase();
   if (safe.length === 0) {
