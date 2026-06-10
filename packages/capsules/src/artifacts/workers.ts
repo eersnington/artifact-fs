@@ -200,7 +200,7 @@ function isomorphicGitOps(): GitOps {
     async open(input) {
       const [{ default: git }, { default: http }] = await Promise.all([
         import("isomorphic-git"),
-        import("isomorphic-git/http/web/index.js"),
+        import("isomorphic-git/http/web"),
       ]);
       const fs = new MemoryFS();
       const dir = "/workspace";
