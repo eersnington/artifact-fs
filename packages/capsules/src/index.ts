@@ -1,14 +1,15 @@
 export { Capsules } from "./core/capsules.js";
 export { Artifacts } from "./artifacts/layers.js";
 export { CapsuleError, type CapsuleErrorCode } from "./core/errors.js";
-export { stableHash } from "./internal/hash.js";
-export { redact, type RedactOptions } from "./internal/redact.js";
 
 export type {
   ArtifactLayer,
   CapsuleDedupe,
   CapsuleDefinition,
-  CapsuleEffectDetails,
+  CapsuleEffectRecordInput,
+  CapsuleEffectRef,
+  CapsuleEffectSnapshot,
+  CapsuleEffectSnapshotOptions,
   CapsuleEffects,
   CapsuleFailure,
   CapsuleFileBody,

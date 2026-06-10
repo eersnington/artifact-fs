@@ -3,12 +3,7 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers";
-import {
-  Artifacts as ArtifactLayers,
-  Capsules,
-  redact,
-  stableHash,
-} from "workflow-capsules";
+import { Artifacts as ArtifactLayers, Capsules } from "workflow-capsules";
 
 type ChargePayload = {
   customerId: string;
@@ -58,7 +53,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
           currency: event.payload.currency,
         },
         idempotencyKey: `wf:${event.instanceId}:charge-customer:${ctx.step.count}`,
-        run: async ({ input, files, effects, idempotencyKey }) => {
+        run: async ({ input, effects, idempotencyKey }) => {
           const requestBody = new URLSearchParams({
             customer: input.customerId,
             amount: String(input.amount),
@@ -77,23 +72,16 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
           });
           const body = (await response.json()) as StripePaymentIntent;
 
-          await files.write("request/redacted.json", {
-            customerId: input.customerId,
-            amount: input.amount,
-            currency: input.currency,
-            idempotencyKey,
-          });
-          await files.write("response/payment-intent.json", redact(body));
-
-          await effects.record("stripe.payment_intent.create", {
-            ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+          const effect = await effects.record("stripe.payment_intent.create", {
             externalId: body.id,
             httpStatus: response.status,
-            requestHash: await stableHash({
+            request: {
               customerId: input.customerId,
               amount: input.amount,
               currency: input.currency,
-            }),
+              idempotencyKey,
+            },
+            response: body,
           });
           if (!response.ok) {
             throw new Error(
@@ -103,7 +91,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
 
           return {
             paymentIntentId: body.id,
-            responsePath: "response/payment-intent.json",
+            effectPath: effect.path,
           };
         },
       });
@@ -119,7 +107,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
           paymentIntentId: charge.output.paymentIntentId,
         },
         idempotencyKey: `wf:${event.instanceId}:create-invoice:${ctx.step.count}`,
-        run: async ({ input, files, effects, idempotencyKey }) => {
+        run: async ({ input, effects, idempotencyKey }) => {
           const requestBody = new URLSearchParams({
             customer: input.customerId,
             metadata_payment_intent: input.paymentIntentId,
@@ -137,18 +125,15 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
           });
           const body = (await response.json()) as StripeInvoice;
 
-          await files.write("request/redacted.json", {
-            customerId: input.customerId,
-            paymentIntentId: input.paymentIntentId,
-            idempotencyKey,
-          });
-          await files.write("response/invoice.json", redact(body));
-
-          await effects.record("stripe.invoice.create", {
-            ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
+          const effect = await effects.record("stripe.invoice.create", {
             externalId: body.id,
             httpStatus: response.status,
-            requestHash: await stableHash(input),
+            request: {
+              customerId: input.customerId,
+              paymentIntentId: input.paymentIntentId,
+              idempotencyKey,
+            },
+            response: body,
           });
           if (!response.ok) {
             throw new Error(`Stripe invoice.create failed with HTTP ${response.status}`);
@@ -156,7 +141,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
 
           return {
             invoiceId: body.id,
-            invoicePath: "response/invoice.json",
+            effectPath: effect.path,
           };
         },
       });

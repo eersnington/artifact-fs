@@ -2,7 +2,7 @@
 
 Durable, versioned artifact capture for Cloudflare Workflows steps.
 
-A Workflow step often produces a file tree that is too large, too important, or too evolving to store as Workflow state: AI responses, build artifacts, generated reports, database dumps, redacted provider fixtures. Capsule turns that file tree into a Git commit in a [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/) repo and returns small, serializable refs that fit Workflow state.
+A Workflow step often produces a file tree that is too large, too important, or too evolving to store as Workflow state: AI responses, build artifacts, generated reports, database dumps, provider fixtures. Capsule turns that file tree into a Git commit in a [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/) repo and returns small, serializable refs that fit Workflow state.
 
 Capsule does not wrap or replace `step.do()`. Workflows stays the durable execution engine; Artifacts becomes the durable file and versioning layer.
 
@@ -25,7 +25,7 @@ npm i workflow-capsules
 
 ```ts
 import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
-import { Artifacts, Capsules, redact, stableHash } from "workflow-capsules";
+import { Artifacts, Capsules } from "workflow-capsules";
 
 export class ChargeCustomerWorkflow extends WorkflowEntrypoint<Env, ChargePayload> {
   async run(event: WorkflowEvent<ChargePayload>, step: WorkflowStep) {
@@ -42,7 +42,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<Env, ChargePayloa
           currency: event.payload.currency,
         },
         idempotencyKey: `wf:${event.instanceId}:charge-customer:${ctx.step.count}`,
-        run: async ({ input, files, effects, idempotencyKey }) => {
+        run: async ({ input, effects, idempotencyKey }) => {
           const response = await fetch("https://api.stripe.com/v1/payment_intents", {
             method: "POST",
             headers: {
@@ -58,14 +58,11 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<Env, ChargePayloa
           });
           const body = await response.json<StripePaymentIntent>();
 
-          await files.write("request/redacted.json", { ...input, idempotencyKey });
-          await files.write("response/payment-intent.json", redact(body));
-
-          await effects.record("stripe.payment_intent.create", {
-            idempotencyKey,
+          const effect = await effects.record("stripe.payment_intent.create", {
             externalId: body.id,
             httpStatus: response.status,
-            requestHash: await stableHash(input),
+            request: { ...input, idempotencyKey },
+            response: body,
           });
           if (!response.ok) {
             throw new Error(`Stripe payment_intent.create failed with ${response.status}`);
@@ -73,7 +70,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<Env, ChargePayloa
 
           return {
             paymentIntentId: body.id,
-            responsePath: "response/payment-intent.json",
+            effectPath: effect.path,
           };
         },
       });
@@ -135,9 +132,13 @@ Replay-safe: if the same step attempt with the same input hash is already commit
 
 The single file-writing primitive. Accepts JSON-like objects, strings, `Uint8Array`, `ArrayBuffer`, `Blob`, and `ReadableStream<Uint8Array>`. Paths are relative, `/`-separated, and traversal-free.
 
-### `effects.record(kind, details)`
+### `effects.record(kind, record)`
 
-Writes a side-effect audit manifest for an external call that **already happened** — it does not call the provider. Capsule adds workflow, instance id, step, attempt, timestamps, and idempotency key automatically. You provide concrete provider facts: `externalId`, `httpStatus`, `requestHash`, `responseHash`, provider metadata. Do not include status/outcome summaries; step success is represented by the commit or `failure.json`.
+Writes a side-effect record for an external call that **already happened** — it does not call the provider. Use this for provider operations such as `stripe.payment_intent.create`, `sendgrid.email.send`, or `github.issue.create`.
+
+Capsule adds workflow, instance id, step, attempt, timestamps, input hash, and idempotency key automatically. You can provide concrete provider facts such as `externalId`, `httpStatus`, `metadata`, and optional `request`/`response` snapshots. Capsule writes those snapshots under the effect directory and records their size and digest automatically.
+
+Capsule stores exactly what you pass to `effects.record()` and `files.write()`. Artifact repos are access-controlled, but they are durable Git history. Shape, omit, or transform sensitive fields before recording or writing them.
 
 ### `Capsules.define<Input, Output>(definition)`
 
@@ -156,11 +157,12 @@ await step.do("capture build artifacts", (ctx) =>
 
 `define()` also accepts an optional Standard Schema-compatible `input` schema for runtime validation.
 
-### Helpers
+### Automatic Metadata
 
-- `stableHash(value)` — canonical-JSON SHA-256 (`sha256:...`), key-order independent.
-- `redact(value, { keys? })` — deep-redacts common secret-bearing keys before `files.write()`.
 - `inspectRun({ workflowName, instanceId })` — run summary from `.capsule/index.json` plus manifests.
+- `input.hash` is computed automatically from the validated capture input.
+- `files.write()` refs include automatic size and digest metadata.
+- `effects.record()` request/response refs include automatic size and digest metadata.
 
 ## Run Repo Layout
 
@@ -178,10 +180,12 @@ steps/
         input.hash.json
         output.json
         effects/
-          stripe-payment-intent-create.json
+          stripe-payment-intent-create/
+            record.json
+            request.json
+            response.json
         files/
-          request/redacted.json
-          response/payment-intent.json
+          output/answer.md
 ```
 
 What Git gives you:

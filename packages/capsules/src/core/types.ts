@@ -76,6 +76,11 @@ export type CapsuleFileRef = {
 };
 
 export type CapsuleFiles = {
+  /**
+   * Write an artifact file into durable Git history for this step attempt.
+   * Capsule stores exactly the bytes passed here; callers are responsible for
+   * shaping, omitting, or transforming sensitive data before writing.
+   */
   write(
     path: string,
     body: CapsuleFileBody,
@@ -84,21 +89,45 @@ export type CapsuleFiles = {
 };
 
 /**
- * Concrete provider facts for an external side effect that already happened.
- * Capsule adds workflow/step/attempt/idempotency metadata automatically; do
- * not include status/outcome summaries here.
+ * Request or response snapshot for an external side effect that already
+ * happened. Capsule stores exactly the body passed here in durable Git history;
+ * callers decide what is safe to persist.
  */
-export type CapsuleEffectDetails = {
+export type CapsuleEffectSnapshotOptions = {
+  readonly body: CapsuleFileBody;
+  readonly mediaType?: string;
+  /** Relative path inside this effect directory. Defaults to request/response.json. */
+  readonly path?: string;
+};
+
+export type CapsuleEffectSnapshot = CapsuleFileBody | CapsuleEffectSnapshotOptions;
+
+export type CapsuleEffectRecordInput = {
   readonly externalId?: string;
   readonly httpStatus?: number;
-  readonly requestHash?: string;
-  readonly responseHash?: string;
+  readonly request?: CapsuleEffectSnapshot;
+  readonly response?: CapsuleEffectSnapshot;
+  readonly metadata?: Record<string, unknown>;
+};
+
+export type CapsuleEffectRef = {
+  readonly kind: string;
+  readonly path: string;
+  readonly seq: number;
+  readonly externalId?: string;
+  readonly httpStatus?: number;
   readonly idempotencyKey?: string;
-  readonly [key: string]: unknown;
+  readonly request?: CapsuleFileRef;
+  readonly response?: CapsuleFileRef;
 };
 
 export type CapsuleEffects = {
-  record(kind: string, details?: CapsuleEffectDetails): Promise<void>;
+  /**
+   * Record an external side effect that already happened. This does not call
+   * the provider. Optional request/response snapshots are persisted exactly as
+   * supplied; callers decide what is safe to store in durable Git history.
+   */
+  record(kind: string, record?: CapsuleEffectRecordInput): Promise<CapsuleEffectRef>;
 };
 
 export type CapsuleRunContext<Input> = {
@@ -171,8 +200,9 @@ export type CapsuleRefs<Output = unknown> = {
    * Map of files written by the capsule, keyed by the capsule-relative path
    * passed to `files.write()`. This is a plain record; it is not derived from
    * `Output`.
-   */
+  */
   readonly files: Record<string, CapsuleFileRef>;
+  readonly effects: ReadonlyArray<CapsuleEffectRef>;
   readonly output: Output;
   readonly manifestPath: string;
   readonly diff?: {
@@ -222,7 +252,7 @@ export type StepManifest = {
   readonly finishedAt: string;
 };
 
-/** JSON audit record written at `steps/<step>/attempts/<n>/effects/<safe-kind>.json`. */
+/** JSON audit record written at `steps/<step>/attempts/<n>/effects/<safe-kind>/record.json`. */
 export type EffectRecord = {
   readonly kind: string;
   readonly path: string;
@@ -236,7 +266,11 @@ export type EffectRecord = {
   };
   readonly capsule: { readonly name: string; readonly id: string };
   readonly idempotencyKey?: string;
-  readonly details: CapsuleEffectDetails;
+  readonly externalId?: string;
+  readonly httpStatus?: number;
+  readonly request?: CapsuleFileRef;
+  readonly response?: CapsuleFileRef;
+  readonly metadata?: Record<string, unknown>;
 };
 
 /** JSON failure record written at `steps/<step>/attempts/<n>/failure.json`. */

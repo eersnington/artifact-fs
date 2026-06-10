@@ -1,24 +1,25 @@
 import type {
-  CapsuleEffectDetails,
+  CapsuleEffectRef,
+  CapsuleEffectRecordInput,
   EffectRecord,
   StepIdentity,
 } from "../core/types.js";
 import { safeEffectKind } from "../core/validation.js";
-import { effectPath } from "../git/layout.js";
+import { effectDirPath } from "../git/layout.js";
 
 /**
- * Compute the repo-absolute effect file path for the nth occurrence of an
+ * Compute the repo-absolute effect directory for the nth occurrence of an
  * effect kind within one attempt. The first occurrence keeps the clean
- * `<safe-kind>.json` name; repeats get `-2`, `-3`, ... suffixes.
+ * `<safe-kind>` name; repeats get `-2`, `-3`, ... suffixes.
  */
-export function effectFilePath(
+export function effectDirectoryPath(
   step: StepIdentity,
   kind: string,
   kindSeq: number,
 ): string {
   const safeKind = safeEffectKind(kind);
   const stem = kindSeq <= 1 ? safeKind : `${safeKind}-${kindSeq}`;
-  return effectPath(step.attemptDir, stem);
+  return effectDirPath(step.attemptDir, stem);
 }
 
 /**
@@ -29,8 +30,8 @@ export function effectFilePath(
  */
 export function buildEffectRecord(input: {
   kind: string;
-  details: CapsuleEffectDetails;
-  path: string;
+  record: CapsuleEffectRecordInput;
+  ref: CapsuleEffectRef;
   seq: number;
   workflowName: string;
   instanceId: string;
@@ -39,7 +40,7 @@ export function buildEffectRecord(input: {
 }): EffectRecord {
   return {
     kind: input.kind,
-    path: input.path,
+    path: input.ref.path,
     seq: input.seq,
     recordedAt: input.now.toISOString(),
     workflow: { name: input.workflowName, instanceId: input.instanceId },
@@ -52,6 +53,14 @@ export function buildEffectRecord(input: {
     ...(input.step.idempotencyKey !== undefined
       ? { idempotencyKey: input.step.idempotencyKey }
       : {}),
-    details: input.details,
+    ...(input.record.externalId !== undefined
+      ? { externalId: input.record.externalId }
+      : {}),
+    ...(input.record.httpStatus !== undefined
+      ? { httpStatus: input.record.httpStatus }
+      : {}),
+    ...(input.ref.request !== undefined ? { request: input.ref.request } : {}),
+    ...(input.ref.response !== undefined ? { response: input.ref.response } : {}),
+    ...(input.record.metadata !== undefined ? { metadata: input.record.metadata } : {}),
   };
 }

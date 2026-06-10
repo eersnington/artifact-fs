@@ -8,10 +8,13 @@ import type {
   ArtifactLayer,
   ArtifactRunSession,
   ArtifactStepSession,
-  CapsuleEffectDetails,
+  CapsuleEffectRecordInput,
+  CapsuleEffectSnapshot,
+  CapsuleEffectSnapshotOptions,
   CapsuleFileBody,
   CapsuleFileOptions,
   CapsuleFileRef,
+  CapsuleEffectRef,
   CapsuleRefs,
   CapsuleSpec,
   CapsulesService,
@@ -35,6 +38,7 @@ import {
   commitMessageFor,
   failureCommitMessageFor,
   failurePath,
+  effectRecordPath,
   filesBasePath,
   INIT_COMMIT_MESSAGE,
   inputHashPath,
@@ -43,7 +47,7 @@ import {
   runRepoName,
   stepDirName,
 } from "../git/layout.js";
-import { buildEffectRecord, effectFilePath } from "../observability/effects.js";
+import { buildEffectRecord, effectDirectoryPath } from "../observability/effects.js";
 import { appendIndexEntry, readRunIndex } from "../observability/run-index.js";
 import { define } from "./define.js";
 
@@ -116,7 +120,7 @@ class CapsulesImpl implements CapsulesService {
           write: (path, body, options) => recorder.write(path, body, options),
         },
         effects: {
-          record: (kind, details) => recorder.recordEffect(kind, details),
+          record: (kind, record) => recorder.recordEffect(kind, record),
         },
         ...(step.idempotencyKey !== undefined
           ? { idempotencyKey: step.idempotencyKey }
@@ -180,6 +184,7 @@ class CapsulesImpl implements CapsulesService {
         ...(committed.parent !== undefined ? { parent: committed.parent } : {}),
       },
       files: recorder.fileRefs(),
+      effects: recorder.effectRefs(),
       output,
       manifestPath: manifestPath(step.attemptDir),
       ...(committed.parent !== undefined
@@ -373,6 +378,7 @@ function initRunFiles(
 class AttemptRecorder {
   private readonly refs: Record<string, CapsuleFileRef> = {};
   private readonly effectRecords: EffectRecord[] = [];
+  private readonly effectRefsByPath: CapsuleEffectRef[] = [];
   private readonly kindCounts = new Map<string, number>();
 
   constructor(
@@ -406,30 +412,76 @@ class AttemptRecorder {
 
   async recordEffect(
     kind: string,
-    details: CapsuleEffectDetails = {},
-  ): Promise<void> {
+    record: CapsuleEffectRecordInput = {},
+  ): Promise<CapsuleEffectRef> {
     const kindSeq = (this.kindCounts.get(kind) ?? 0) + 1;
     this.kindCounts.set(kind, kindSeq);
-    const path = effectFilePath(this.ctx.step, kind, kindSeq);
-    const record = buildEffectRecord({
+    const effectDir = effectDirectoryPath(this.ctx.step, kind, kindSeq);
+    const request = await this.writeEffectSnapshot(effectDir, "request", record.request);
+    const response = await this.writeEffectSnapshot(effectDir, "response", record.response);
+    const effectRef: CapsuleEffectRef = {
       kind,
-      details,
-      path,
+      path: effectRecordPath(effectDir),
       seq: this.effectRecords.length + 1,
+      ...(record.externalId !== undefined ? { externalId: record.externalId } : {}),
+      ...(record.httpStatus !== undefined ? { httpStatus: record.httpStatus } : {}),
+      ...(this.ctx.step.idempotencyKey !== undefined
+        ? { idempotencyKey: this.ctx.step.idempotencyKey }
+        : {}),
+      ...(request !== undefined ? { request } : {}),
+      ...(response !== undefined ? { response } : {}),
+    };
+    const effectRecord = buildEffectRecord({
+      kind,
+      record,
+      ref: effectRef,
+      seq: effectRef.seq,
       workflowName: this.ctx.workflowName,
       instanceId: this.ctx.instanceId,
       step: this.ctx.step,
       now: new Date(),
     });
     this.stepSession.stage(
-      path,
-      encoder.encode(JSON.stringify(record, null, 2) + "\n"),
+      effectRef.path,
+      encoder.encode(JSON.stringify(effectRecord, null, 2) + "\n"),
     );
-    this.effectRecords.push(record);
+    this.effectRecords.push(effectRecord);
+    this.effectRefsByPath.push(effectRef);
+    return effectRef;
+  }
+
+  private async writeEffectSnapshot(
+    effectDir: string,
+    defaultName: "request" | "response",
+    snapshot: CapsuleEffectSnapshot | undefined,
+  ): Promise<CapsuleFileRef | undefined> {
+    if (snapshot === undefined) return undefined;
+    const body = isSnapshotObject(snapshot) ? snapshot.body : snapshot;
+    const snapshotPath = isSnapshotObject(snapshot)
+      ? validateCapsulePath(snapshot.path ?? `${defaultName}.json`)
+      : `${defaultName}.json`;
+    const repoPath = `${effectDir}/${snapshotPath}`;
+    const { bytes, mediaType } = await bodyToBytes(snapshotPath, body);
+    const ref: CapsuleFileRef = {
+      path: repoPath,
+      ...(isSnapshotObject(snapshot) && snapshot.mediaType !== undefined
+        ? { mediaType: snapshot.mediaType }
+        : mediaType !== undefined
+          ? { mediaType }
+          : {}),
+      size: bytes.byteLength,
+      digest: await digestBytes(bytes),
+    };
+    this.stepSession.stage(repoPath, bytes);
+    return ref;
   }
 
   effects(): ReadonlyArray<EffectRecord> {
     return this.effectRecords;
+  }
+
+  effectRefs(): ReadonlyArray<CapsuleEffectRef> {
+    return this.effectRefsByPath;
   }
 
   fileRefs(): Record<string, CapsuleFileRef> {
@@ -494,10 +546,25 @@ class AttemptRecorder {
       input: { hash: step.inputHash },
       files: this.fileRefs(),
       effects: this.effectRecords,
-      externalEffectPossible: this.effectRecords.length > 0,
+      externalEffectPossible:
+        this.effectRecords.length > 0 || step.idempotencyKey !== undefined,
       failedAt: new Date().toISOString(),
     };
   }
+}
+
+function isSnapshotObject(
+  snapshot: CapsuleEffectSnapshot,
+): snapshot is CapsuleEffectSnapshotOptions {
+  return (
+    snapshot !== null &&
+    typeof snapshot === "object" &&
+    !(snapshot instanceof Uint8Array) &&
+    !(snapshot instanceof ArrayBuffer) &&
+    !(typeof Blob !== "undefined" && snapshot instanceof Blob) &&
+    !(typeof ReadableStream !== "undefined" && snapshot instanceof ReadableStream) &&
+    "body" in snapshot
+  );
 }
 
 async function stageIndexEntry(
@@ -582,6 +649,18 @@ function refsFromResolved<Output>(
       ...(resolved.parent !== undefined ? { parent: resolved.parent } : {}),
     },
     files: { ...resolved.manifest.files },
+    effects: resolved.manifest.effects.map((effect) => ({
+      kind: effect.kind,
+      path: effect.path,
+      seq: effect.seq,
+      ...(effect.externalId !== undefined ? { externalId: effect.externalId } : {}),
+      ...(effect.httpStatus !== undefined ? { httpStatus: effect.httpStatus } : {}),
+      ...(effect.idempotencyKey !== undefined
+        ? { idempotencyKey: effect.idempotencyKey }
+        : {}),
+      ...(effect.request !== undefined ? { request: effect.request } : {}),
+      ...(effect.response !== undefined ? { response: effect.response } : {}),
+    })),
     output: resolved.manifest.output as Output,
     manifestPath: manifestPath(
       attemptDirPath(

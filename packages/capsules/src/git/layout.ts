@@ -10,7 +10,7 @@ import type { StepIdentity } from "../core/types.js";
  *   steps/<NNN>-<step-slug>/attempts/<n>/failure.json        (failed attempts)
  *   steps/<NNN>-<step-slug>/attempts/<n>/input.hash.json
  *   steps/<NNN>-<step-slug>/attempts/<n>/output.json
- *   steps/<NNN>-<step-slug>/attempts/<n>/effects/<safe-kind>.json
+ *   steps/<NNN>-<step-slug>/attempts/<n>/effects/<safe-kind>/record.json
  *   steps/<NNN>-<step-slug>/attempts/<n>/files/...
  */
 
@@ -44,8 +44,12 @@ export function outputPath(attemptDir: string): string {
   return `${attemptDir}/output.json`;
 }
 
-export function effectPath(attemptDir: string, safeKind: string): string {
-  return `${attemptDir}/effects/${safeKind}.json`;
+export function effectDirPath(attemptDir: string, safeKind: string): string {
+  return `${attemptDir}/effects/${safeKind}`;
+}
+
+export function effectRecordPath(effectDir: string): string {
+  return `${effectDir}/record.json`;
 }
 
 export function filesBasePath(attemptDir: string): string {

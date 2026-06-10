@@ -3,13 +3,13 @@ import {
   Artifacts,
   CapsuleError,
   Capsules,
-  stableHash,
   type ArtifactLayer,
   type WorkflowEventLike,
   type WorkflowStepContextLike,
 } from "../src/index.js";
 import { DEFAULT_BRANCH } from "../src/git/layout.js";
 import type { InternalArtifactLayer, StandardSchemaV1 } from "../src/core/types.js";
+import { stableHash } from "../src/internal/hash.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -84,11 +84,11 @@ describe("Capsules.capture with memory artifacts", () => {
       idempotencyKey: "wf:invoice-77:charge-customer:1",
       input: { customerId: "cus_123", amount: 1200, currency: "usd" },
       run: async ({ input, files, effects, idempotencyKey }) => {
-        await files.write("request/redacted.json", {
+        await files.write("request.json", {
           ...input,
           idempotencyKey,
         });
-        await files.write("response/payment-intent.json", {
+        await files.write("response.json", {
           id: "pi_123",
           object: "payment_intent",
         });
@@ -106,15 +106,20 @@ describe("Capsules.capture with memory artifacts", () => {
         await files.write("blob/plain.txt", new Blob(["blob"]));
 
         await effects.record("stripe.payment_intent.create", {
-          ...(idempotencyKey !== undefined ? { idempotencyKey } : {}),
           externalId: "pi_123",
           httpStatus: 200,
-          requestHash: await stableHash(input),
+          request: {
+            customerId: input.customerId,
+            amount: input.amount,
+            currency: input.currency,
+            idempotencyKey,
+          },
+          response: { id: "pi_123", object: "payment_intent" },
         });
 
         return {
           paymentIntentId: "pi_123",
-          responsePath: "response/payment-intent.json",
+          responsePath: "response.json",
         };
       },
     });
@@ -127,17 +132,23 @@ describe("Capsules.capture with memory artifacts", () => {
       "binary/raw.bin",
       "blob/plain.txt",
       "output/answer.md",
-      "request/redacted.json",
-      "response/payment-intent.json",
+      "request.json",
+      "response.json",
       "stream/chunk.txt",
     ]);
-    expect(refs.files["response/payment-intent.json"]?.mediaType).toBe(
+    expect(refs.files["response.json"]?.mediaType).toBe(
       "application/json",
     );
     expect(refs.files["binary/raw.bin"]?.digest).toMatch(/^sha256:/);
 
     const manifest = await readJson<{
-      effects: Array<{ path: string; details: Record<string, unknown> }>;
+      effects: Array<{
+        path: string;
+        externalId?: string;
+        httpStatus?: number;
+        request?: { path: string; digest?: string };
+        response?: { path: string; digest?: string };
+      }>;
       files: Record<string, unknown>;
       artifact: { parent?: string };
       output: { paymentIntentId: string };
@@ -145,21 +156,31 @@ describe("Capsules.capture with memory artifacts", () => {
     expect(manifest.artifact.parent).toBe(refs.artifact.parent);
     expect(manifest.output.paymentIntentId).toBe("pi_123");
     expect(manifest.effects[0]?.path).toContain(
-      "effects/stripe-payment-intent-create.json",
+      "effects/stripe-payment-intent-create/record.json",
     );
-    expect(manifest.effects[0]?.details).not.toHaveProperty("status");
-    expect(manifest.effects[0]?.details).not.toHaveProperty("outcome");
+    expect(manifest.effects[0]?.externalId).toBe("pi_123");
+    expect(manifest.effects[0]?.request?.digest).toMatch(/^sha256:/);
+    expect(manifest.effects[0]?.response?.digest).toMatch(/^sha256:/);
 
     const effect = await readJson<{
       workflow: { instanceId: string };
       step: { name: string; attempt: number };
       idempotencyKey?: string;
-      details: { externalId?: string; httpStatus?: number };
+      externalId?: string;
+      httpStatus?: number;
+      request?: { path: string };
+      response?: { path: string };
     }>(layer, refs, manifest.effects[0]!.path);
     expect(effect.workflow.instanceId).toBe("invoice-77");
     expect(effect.step).toEqual({ name: "charge customer", count: 1, attempt: 1 });
     expect(effect.idempotencyKey).toBe("wf:invoice-77:charge-customer:1");
-    expect(effect.details).toMatchObject({ externalId: "pi_123", httpStatus: 200 });
+    expect(effect).toMatchObject({ externalId: "pi_123", httpStatus: 200 });
+    await expect(readJson(layer, refs, effect.request!.path)).resolves.toMatchObject({
+      customerId: "cus_123",
+    });
+    await expect(readJson(layer, refs, effect.response!.path)).resolves.toMatchObject({
+      id: "pi_123",
+    });
 
     await expect(
       readText(layer, refs, refs.files["stream/chunk.txt"]!.path),
@@ -314,7 +335,7 @@ describe("Capsules.capture with memory artifacts", () => {
 
     const failure = await readJson<{
       externalEffectPossible: boolean;
-      effects: Array<{ details: { externalId?: string } }>;
+      effects: Array<{ externalId?: string }>;
       error: { message: string; retryable: boolean };
     }>(
       layer,
@@ -325,7 +346,7 @@ describe("Capsules.capture with memory artifacts", () => {
       inspected.entries[0]!.manifestPath,
     );
     expect(failure.externalEffectPossible).toBe(true);
-    expect(failure.effects[0]?.details.externalId).toBe("pi_123");
+    expect(failure.effects[0]?.externalId).toBe("pi_123");
     expect(failure.error.retryable).toBe(true);
   });
 
