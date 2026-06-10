@@ -4,7 +4,7 @@
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.24.0",
-  "description": "MVP example showing Cloudflare Workflows writing large side effects to versioned ArtifactFS capsules.",
+  "description": "Example showing Cloudflare Workflows recording inspectable side effects with workflow-capsules.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
