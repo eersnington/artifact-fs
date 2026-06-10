@@ -26,7 +26,7 @@ describe("readCapsuleFileBody", () => {
     await expect(
       readCapsuleFileBody("bad.json", undefined as never),
     ).rejects.toMatchObject({
-      code: "INVALID_CAPSULE_REQUEST",
+      code: "INVALID_EXTERNAL_CALL",
       retryable: false,
     } satisfies Partial<CapsuleError>);
   });

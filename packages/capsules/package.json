@@ -1,7 +1,7 @@
 {
   "name": "workflow-capsules",
   "version": "0.1.0",
-  "description": "Durable, versioned artifact capture for Cloudflare Workflows steps. Store file-tree side effects as Git commits in Cloudflare Artifacts and keep Workflow state small.",
+  "description": "Idempotency records for external calls inside Cloudflare Workflows.",
   "license": "Apache-2.0",
   "type": "module",
   "packageManager": "pnpm@10.24.0",
@@ -43,10 +43,10 @@
   "keywords": [
     "cloudflare",
     "workflows",
-    "artifacts",
-    "git",
-    "durable",
-    "side-effects"
+    "idempotency",
+    "side-effects",
+    "retries",
+    "external-apis"
   ],
   "dependencies": {
     "isomorphic-git": "1.27.1"

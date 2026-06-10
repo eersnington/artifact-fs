@@ -1,11 +1,10 @@
 import { CapsuleError } from "../core/errors.js";
-import type { CommittedStep } from "../core/types.js";
+import type { CommittedRecord } from "../core/types.js";
 import type { RepositorySession, RepositoryStore } from "./backend.js";
 
 /**
- * HTTP artifact store shared by remote HTTP-backed adapters. The service owns
- * the Git repos (for example an ArtifactFS mount plus native git, or a hosted
- * artifact API) and implements this protocol:
+ * HTTP call-history store shared by remote HTTP-backed adapters. The service
+ * owns the Git repos and implements this protocol:
  *
  *   POST /runs/open                multipart metadata + raw file parts      -> { repo, branch, head? }
  *   GET  /runs/:repo/head                                                  -> { head? }
@@ -63,7 +62,7 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStor
       response = await fetchRemote(`${baseUrl}${route}`, requestOptions);
     } catch (error) {
       throw new CapsuleError(
-        "BACKEND_UNAVAILABLE",
+          "SIDE_EFFECT_STORAGE_FAILED",
         `Could not reach the remote artifact service at ${baseUrl} (${method} ${route}): ` +
           `${error instanceof Error ? error.message : String(error)}. No commit was made. ` +
           "Check the service URL and network access.",
@@ -80,7 +79,7 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStor
     if (response.ok) return;
     const text = await response.text().catch(() => "");
     throw new CapsuleError(
-      response.status >= 500 ? "BACKEND_UNAVAILABLE" : "BACKEND_WRITE_FAILED",
+      "SIDE_EFFECT_STORAGE_FAILED",
       `Remote artifact service rejected ${operation} with HTTP ${response.status}` +
         (text !== "" ? `: ${text.slice(0, 500)}` : ".") +
         " Committed history on the service is intact.",
@@ -129,14 +128,14 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStor
         return new Uint8Array(await response.arrayBuffer());
       },
 
-      async commitFiles(input): Promise<CommittedStep> {
+      async commitFiles(input): Promise<CommittedRecord> {
         const response = await sendRemoteRequest("POST", `${repoRoute}/commit`, buildMultipartBody({
           protocolVersion: 1,
           message: input.message,
           files: fileEntries(input.files),
         }, input.files));
         await assertRemoteResponseOk(response, "commit");
-        return (await response.json()) as CommittedStep;
+        return (await response.json()) as CommittedRecord;
       },
     };
   }
@@ -156,7 +155,7 @@ function buildMultipartBody(
     const bytes = files.get(path);
     if (bytes === undefined) {
       throw new CapsuleError(
-        "INVALID_CAPSULE_REQUEST",
+        "INVALID_EXTERNAL_CALL",
         `Remote multipart request metadata referenced ${path}, but no bytes were staged for that path. ` +
           `No request was sent; retry after rebuilding the staged file set.`,
       );

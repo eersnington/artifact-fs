@@ -8,6 +8,14 @@ export async function hashCapsuleInput(input: unknown): Promise<string> {
   return digestCanonicalJson(input);
 }
 
+export async function hashExternalRequest(input: unknown): Promise<string> {
+  return digestCanonicalJson(input);
+}
+
+export async function hashExternalCallKey(input: string): Promise<string> {
+  return digestCanonicalJson({ key: input });
+}
+
 export async function hashWorkflowRun(input: {
   readonly workflowName: string;
   readonly instanceId: string;

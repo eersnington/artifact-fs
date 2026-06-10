@@ -1,56 +1,64 @@
 import { expectTypeOf } from "vitest";
-import { createCapsules, type CapsuleRefs, type CapsuleSpec } from "../src/index.js";
+import { createCapsules, defineExternalCall, type ExternalCallSpec } from "../src/index.js";
 import { memory } from "../src/memory.js";
 
-type BuildInput = {
-  source: string;
-  bundleStream: ReadableStream<Uint8Array>;
+type ChargeInput = {
+  customerId: string;
+  amount: number;
+  currency: string;
 };
 
-type BuildOutput = {
-  label: string;
-  paths: {
-    bundle: "dist/app.tar.gz";
-    manifest: "dist/manifest.json";
-  };
+type PaymentIntent = {
+  id: string;
+  object: "payment_intent";
 };
 
-const workflow = { workflowName: "BuildWorkflow", instanceId: "build-1" };
-const step = { step: { name: "capture build artifacts", count: 1 }, attempt: 1 };
-const stream = new ReadableStream<Uint8Array>();
+const workflow = { workflowName: "ChargeWorkflow", instanceId: "charge-1" };
+const step = { step: { name: "charge customer", count: 1 }, attempt: 1 };
 
 const spec = {
-  workflow,
-  step,
-  name: "build-artifacts",
-  input: { source: "web", bundleStream: stream },
-  run: async ({ input, files }) => {
-    await files.write("dist/app.tar.gz", input.bundleStream);
-    await files.write("dist/manifest.json", { source: input.source });
-    return {
-      label: input.source,
-      paths: {
-        bundle: "dist/app.tar.gz",
-        manifest: "dist/manifest.json",
-      },
-    };
+  name: "stripe.payment_intent.create",
+  recovery: "idempotent-call",
+  execute: async ({ request, key, attempt }) => {
+    expectTypeOf(request).toEqualTypeOf<ChargeInput>();
+    expectTypeOf(key).toEqualTypeOf<string>();
+    expectTypeOf(attempt).toEqualTypeOf<number>();
+    return { id: request.customerId, object: "payment_intent" as const };
   },
-} satisfies CapsuleSpec<BuildInput, BuildOutput>;
+  summary: ({ request, result }) => {
+    expectTypeOf(request).toEqualTypeOf<ChargeInput>();
+    expectTypeOf(result).toEqualTypeOf<PaymentIntent>();
+    return { externalId: result.id };
+  },
+} satisfies ExternalCallSpec<ChargeInput, PaymentIntent>;
 
-expectTypeOf(spec.input).toEqualTypeOf<BuildInput>();
-
+const createPaymentIntent = defineExternalCall(spec);
 const capsules = createCapsules({ adapter: memory() });
-expectTypeOf(capsules.capture(spec)).toEqualTypeOf<
-  Promise<CapsuleRefs<BuildOutput>>
->();
 
-const badSpec = {
+expectTypeOf(
+  capsules.call(createPaymentIntent, {
+    workflow,
+    step,
+    key: "wf:charge-1:charge-customer",
+    request: { customerId: "cus_123", amount: 1200, currency: "usd" },
+  }),
+).toEqualTypeOf<Promise<PaymentIntent>>();
+
+void capsules.call(createPaymentIntent, {
   workflow,
   step,
-  name: "build-artifacts",
-  // @ts-expect-error - BuildInput requires bundleStream.
-  input: { source: "web" },
-  run: async ({ input }: { input: BuildInput }) => input,
-} satisfies CapsuleSpec<BuildInput, BuildInput>;
+  key: "wf:charge-1:charge-customer",
+  // @ts-expect-error - ChargeInput requires currency.
+  request: { customerId: "cus_123", amount: 1200 },
+});
 
-void badSpec;
+defineExternalCall<ChargeInput, PaymentIntent>({
+  name: "github.issue.create",
+  recovery: {
+    reconcile: async ({ request }) => {
+      expectTypeOf(request).toEqualTypeOf<ChargeInput>();
+      return { status: "found", result: { id: "pi_123", object: "payment_intent" } };
+    },
+  },
+  execute: async () => ({ id: "pi_123", object: "payment_intent" }),
+});

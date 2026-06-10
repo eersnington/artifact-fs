@@ -1,17 +1,13 @@
 import { describe, expect, it } from "vitest";
-import {
-  createCapsules,
-} from "../src/index.js";
+import { createCapsules, defineExternalCall } from "../src/index.js";
 import { cloudflare, type ArtifactsBindingLike } from "../src/cloudflare.js";
 import type {
   GitWorkspaceFactory,
   PushableGitWorkspace,
 } from "../src/repositories/cloudflare-artifacts.js";
 
-const encoder = new TextEncoder();
-
 describe("Cloudflare adapter", () => {
-  it("creates a repo, strips token expiry metadata, and never returns tokens in refs", async () => {
+  it("creates a repo, strips token expiry metadata, and never returns tokens", async () => {
     const opened: Array<{
       remote: string;
       branch: string;
@@ -49,31 +45,29 @@ describe("Cloudflare adapter", () => {
     const capsules = createCapsules({
       adapter: cloudflare(binding, { gitWorkspaceFactory }),
     });
-    const refs = await capsules.capture({
-      workflow: { workflowName: "ResearchWorkflow", instanceId: "research-001" },
-      step: { step: { name: "create ai response", count: 1 }, attempt: 1 },
-      name: "ai-response",
-      input: { prompt: "hi" },
-      run: async ({ files, effects }) => {
-        await files.write("output/answer.md", "hello", { exposeAs: "answer" });
-        await effects.record("cloudflare-ai.run", { externalId: "run_123" });
-        return { answerPath: "output/answer.md" };
-      },
+    const call = defineExternalCall<{ prompt: string }, { id: string }>({
+      name: "cloudflare.ai.run",
+      recovery: "idempotent-call",
+      execute: async () => ({ id: "run_123" }),
     });
 
-    expect(opened).toEqual([
-      {
-        remote: `https://example.com/${refs.artifact.repo}.git`,
-        branch: "main",
-        isNew: true,
-        password: "art_v1_secret",
-      },
-    ]);
-    expect(JSON.stringify(refs)).not.toContain("secret");
-    expect(refs.artifact.adapter).toBe("cloudflare");
-    expect(await workspace.readFile(refs.files.answer!.path)).toEqual(
-      encoder.encode("hello"),
-    );
+    const result = await capsules.call(call, {
+      workflow: { workflowName: "ResearchWorkflow", instanceId: "research-001" },
+      step: { step: { name: "create ai response", count: 1 }, attempt: 1 },
+      key: "wf:research-001:ai-response",
+      request: { prompt: "hi" },
+    });
+
+    expect(result).toEqual({ id: "run_123" });
+    expect(opened).toHaveLength(1);
+    expect(opened[0]).toMatchObject({
+      branch: "main",
+      isNew: true,
+      password: "art_v1_secret",
+    });
+    expect(opened[0]?.remote).toContain("https://example.com/capsule-ResearchWorkflow-research-001.git");
+    expect(JSON.stringify(result)).not.toContain("secret");
+    expect(await workspace.readFile(".calls/run.json")).not.toBeNull();
   });
 });
 

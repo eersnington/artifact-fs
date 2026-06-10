@@ -1,18 +1,10 @@
 # workflow-capsules
 
-Durable, versioned artifact capture for Cloudflare Workflows steps.
+Idempotency records for external calls inside Cloudflare Workflows.
 
-A Workflow step often produces a file tree that is too large, too important, or too evolving to store as Workflow state: AI responses, build artifacts, generated reports, database dumps, provider fixtures. Capsule turns that file tree into a Git commit in a [Cloudflare Artifacts](https://developers.cloudflare.com/artifacts/) repo and returns small, serializable refs that fit Workflow state.
+Cloudflare Workflows retries failed steps. That is good for durable execution, but external APIs can commit side effects even when a step does not finish cleanly. Capsules records the lifecycle of external calls made inside steps, reuses known committed outputs on retry, and forces reconciliation when the outcome is ambiguous.
 
-Capsule does not wrap or replace `step.do()`. Workflows stays the durable execution engine; Artifacts becomes the durable file and versioning layer.
-
-```txt
-Workflow step.do(...)
-  -> capsules.capture(...)
-  -> user code produces files
-  -> adapter commits the tree to a Git run repo
-  -> Workflow state stores refs only
-```
+Capsules does not replace `step.do()`, retry config, rollback, `waitForEvent`, logs, metrics, R2, or Workflows state. Workflows owns execution. Capsules tracks the external side effect inside one retryable step.
 
 ## Install
 
@@ -24,70 +16,199 @@ npm i workflow-capsules
 ## Quick Start
 
 ```ts
-import { WorkflowEntrypoint, type WorkflowEvent, type WorkflowStep } from "cloudflare:workers";
-import { createCapsules } from "workflow-capsules";
+import {
+  WorkflowEntrypoint,
+  type WorkflowEvent,
+  type WorkflowStep,
+} from "cloudflare:workers";
+import { createCapsules, defineExternalCall } from "workflow-capsules";
 import { cloudflare } from "workflow-capsules/cloudflare";
+
+type ChargePayload = {
+  readonly customerId: string;
+  readonly amount: number;
+  readonly currency: string;
+};
+
+type StripePaymentIntent = {
+  readonly id: string;
+  readonly object: "payment_intent";
+  readonly status?: string;
+};
 
 export class ChargeCustomerWorkflow extends WorkflowEntrypoint<Env, ChargePayload> {
   async run(event: WorkflowEvent<ChargePayload>, step: WorkflowStep) {
     const capsules = createCapsules({ adapter: cloudflare(this.env.ARTIFACTS) });
 
-    const charge = await step.do("charge customer", async (ctx) => {
-      return capsules.capture(
-        {
-          workflow: event,
-          step: ctx,
-          name: "stripe-payment-intent",
-          input: {
-            customerId: event.payload.customerId,
-            amount: event.payload.amount,
-            currency: event.payload.currency,
+    const createPaymentIntent = defineExternalCall<ChargePayload, StripePaymentIntent>({
+      name: "stripe.payment_intent.create",
+      recovery: "idempotent-call",
+      execute: async ({ request, key }) => {
+        const response = await fetch("https://api.stripe.com/v1/payment_intents", {
+          method: "POST",
+          headers: {
+            authorization: `Bearer ${this.env.STRIPE_SECRET}`,
+            "content-type": "application/x-www-form-urlencoded",
+            "idempotency-key": key,
           },
-          idempotencyKey: `wf:${event.instanceId}:charge-customer:${ctx.step.count}`,
-        },
-        async ({ input, effects, idempotencyKey }) => {
-          const response = await fetch("https://api.stripe.com/v1/payment_intents", {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${this.env.STRIPE_SECRET}`,
-              "content-type": "application/x-www-form-urlencoded",
-              "idempotency-key": idempotencyKey!,
-            },
-            body: new URLSearchParams({
-              customer: input.customerId,
-              amount: String(input.amount),
-              currency: input.currency,
-            }),
-          });
-          const body = await response.json<StripePaymentIntent>();
-
-          const effect = await effects.record("stripe.payment_intent.create", {
-            externalId: body.id,
-            httpStatus: response.status,
-            request: { ...input, idempotencyKey },
-            response: { id: body.id, status: body.status },
-          });
-          if (!response.ok) {
-            throw new Error(`Stripe payment_intent.create failed with ${response.status}`);
-          }
-
-          return {
-            paymentIntentId: body.id,
-            effectPath: effect.path,
-          };
-        },
-      );
+          body: new URLSearchParams({
+            customer: request.customerId,
+            amount: String(request.amount),
+            currency: request.currency,
+          }),
+        });
+        const body = (await response.json()) as StripePaymentIntent;
+        if (!response.ok) {
+          throw new Error(`Stripe payment_intent.create failed with HTTP ${response.status}`);
+        }
+        return body;
+      },
+      summary: ({ request, result }) => ({
+        externalId: result.id,
+        status: result.status,
+        amount: request.amount,
+        currency: request.currency,
+      }),
     });
 
-    // Workflow state stores only refs; the file tree lives in Artifacts.
-    return { paymentIntentId: charge.output.paymentIntentId, commit: charge.artifact.commit };
+    const charge = await step.do("charge customer", async (ctx) => {
+      const intent = await capsules.call(createPaymentIntent, {
+        workflow: event,
+        step: ctx,
+        key: `wf:${event.instanceId}:charge-customer`,
+        request: event.payload,
+      });
+
+      return { paymentIntentId: intent.id };
+    });
+
+    return charge;
   }
 }
 ```
 
-## Adapters
+The Workflow remains normal Cloudflare Workflows code:
 
-Pick the adapter once; Workflow step bodies never change across adapters.
+```ts
+const intent = await capsules.call(createPaymentIntent, {
+  workflow: event,
+  step: ctx,
+  key: `wf:${event.instanceId}:charge-customer`,
+  request: { customerId, amount, currency },
+});
+
+return { paymentIntentId: intent.id };
+```
+
+`capsules.call(...)` returns the provider result, not a Capsules metadata wrapper.
+
+## Core API
+
+### `defineExternalCall(spec)`
+
+Defines a named provider operation once:
+
+```ts
+const createGitHubIssue = defineExternalCall<CreateIssueInput, CreatedIssue>({
+  name: "github.issue.create",
+  recovery: {
+    reconcile: async ({ key, request }) => {
+      const issue = await findIssueByMarker(request.owner, request.repo, key);
+      if (!issue) return { status: "not_found" };
+      return { status: "found", result: { number: issue.number, url: issue.html_url } };
+    },
+  },
+  execute: async ({ request, key }) => {
+    const issue = await createIssue({
+      ...request,
+      body: `${request.body}\n\n${key}`,
+    });
+    return { number: issue.number, url: issue.html_url };
+  },
+});
+```
+
+### `capsules.call(externalCall, context)`
+
+Runs the provider operation inside a native `step.do` callback:
+
+```ts
+const issue = await step.do("tool github create issue", async (ctx) => {
+  return capsules.call(createGitHubIssue, {
+    workflow: event,
+    step: ctx,
+    key: `issue:${event.instanceId}:create`,
+    request: { owner, repo, title, body },
+  });
+});
+```
+
+The `key` is required. It must be stable across retries for the same external side effect and must not include attempt number, time, or randomness.
+
+## Recovery Policies
+
+```ts
+type ExternalCallRecovery<Request, Result> =
+  | "idempotent-call"
+  | "fail-closed"
+  | { reconcile: (ctx: ReconcileContext<Request>) => Promise<ReconcileResult<Result>> };
+```
+
+`idempotent-call` repeats `execute` with the same key and same request after a prior started-without-result record. Use this for providers like Stripe that enforce idempotency keys.
+
+`reconcile` reads provider state using a marker, external ID, webhook state, or application-owned lookup. A `found` result is stored and returned. `not_found` and `inconclusive` throw `SIDE_EFFECT_AMBIGUOUS` in the MVP.
+
+`fail-closed` throws `SIDE_EFFECT_AMBIGUOUS` before repeating an unsafe provider call.
+
+## What Capsules Records
+
+For each call key, Capsules stores compact JSON records:
+
+```txt
+.calls/
+  run.json
+  by-key/<key-hash>/
+    request.json
+    started.json
+    committed.json
+    summary.json
+    reconciled.json
+    attempts/
+      001-started.json
+      001-error.json
+```
+
+Artifacts is the call-history store, not the product. Storage details are intentionally not part of the happy-path API.
+
+## Failure Behavior
+
+If a committed result already exists for the same key and request digest, Capsules returns it without executing provider code.
+
+If the same key is reused with a different request digest, Capsules throws `SIDE_EFFECT_CONFLICT` before executing provider code.
+
+If storage fails before the started record is persisted, Capsules throws and provider code is not invoked.
+
+If provider code returns but the committed record cannot be persisted, Capsules throws `SIDE_EFFECT_STORAGE_FAILED`. A retry must use the configured recovery policy.
+
+If provider code throws, Capsules keeps the started record and writes an attempt error record when possible, then rethrows the original error so Workflows retry config remains in charge.
+
+Provider business declines should usually be returned as values, not thrown infrastructure errors, when callers want Capsules to store and reuse them.
+
+## Errors
+
+Capsules raises `CapsuleError` with these codes:
+
+```txt
+INVALID_EXTERNAL_CALL
+SIDE_EFFECT_CONFLICT
+SIDE_EFFECT_AMBIGUOUS
+SIDE_EFFECT_STORAGE_FAILED
+SIDE_EFFECT_RECONCILE_FAILED
+```
+
+Docs and applications can convert `SIDE_EFFECT_AMBIGUOUS` to Cloudflare `NonRetryableError` when a Workflow should stop retrying and require operator reconciliation.
+
+## Adapters
 
 ```ts
 import { cloudflare } from "workflow-capsules/cloudflare";
@@ -101,100 +222,27 @@ createCapsules({ adapter: local({ root: "/tmp/capsules" }) });
 createCapsules({ adapter: remote({ url: "http://127.0.0.1:8789", token }) });
 ```
 
-## Core API
+`memory` is for tests. `local` is for development. `cloudflare` is the default Cloudflare-native production adapter. `remote` is for hosted call-history services.
 
-### `capsules.capture(options, run)`
+## When Not To Use Capsules
 
-Captures one side-effectful step. Requires `workflow` (the `WorkflowEvent`) and `step` (the `WorkflowStepContext` that `step.do()` passes to its callback) so Capsule can derive run identity, step identity, and attempt numbers.
+Use plain `step.do()` when the step is read-only.
 
-Returns `CapsuleRefs<Output>`:
+Use plain `step.do()` when repeating the call is harmless.
 
-```ts
-{
-  capsule:  { name, id, inputHash, idempotencyKey?, dedupeKey? },
-  workflow: { name, instanceId, stepName, stepCount, attempt },
-  artifact: { adapter, repo, branch, commit, parent? },
-  files:    Record<string, { path, mediaType?, size?, digest? }>, // only files exposed with exposeAs
-  effects:  CapsuleEffectRef[],
-  effectCount: number,
-  output:   Output,           // your small serializable result
-  manifestPath: string,
-  diff?:    { base, head },
-}
-```
+Use the provider's normal idempotency key directly if durable call history and guardrails are not useful.
 
-Replay-safe: if the same logical step with the same input hash is already committed, `capture()` returns the existing refs without re-running the producer. A committed logical step with a *different* input hash raises a non-retryable `CAPSULE_CONFLICT`.
+Use R2 for arbitrary files and large blobs.
 
-### `files.write(path, body, options?)`
+Use Workflows rollback for compensation after later failure.
 
-The single file-writing primitive. Accepts JSON-like objects, strings, `Uint8Array`, `ArrayBuffer`, `Blob`, and `ReadableStream<Uint8Array>`. Paths are relative, `/`-separated, and traversal-free. File bodies are buffered before commit; do not pass very large files or streams.
+Use `waitForEvent` for webhook-driven progression.
 
-### `effects.record(kind, record)`
+## Limits And Security
 
-Writes a side-effect record for an external call that **already happened** — it does not call the provider. Use this for provider operations such as `stripe.payment_intent.create`, `sendgrid.email.send`, or `github.issue.create`.
+Capsules does not guarantee exactly-once provider execution. It makes retryable Workflow steps idempotency-aware by recording the side-effect boundary, checking request consistency, reusing committed results, and forcing explicit recovery when the outcome is ambiguous.
 
-Capsule adds workflow, instance id, step, attempt, timestamps, input hash, and idempotency key automatically. You can provide concrete provider facts such as `externalId`, `httpStatus`, `metadata`, and optional `request`/`response` snapshots. Capsule writes those snapshots under the effect directory and records their size and digest automatically.
-
-Capsule stores exactly what you pass to `effects.record()` and `files.write()`. Artifact repos are access-controlled, but they are durable Git history. Shape, omit, or transform sensitive fields before recording or writing them.
-
-### Automatic Metadata
-
-- `inspectRun({ workflowName, instanceId })` — run summary from `.capsule/index.json` plus manifests.
-- `input.hash` is computed automatically from the validated capture input.
-- `files.write()` refs include automatic size and digest metadata.
-- `effects.record()` request/response refs include automatic size and digest metadata.
-
-## Run Repo Layout
-
-One Artifact repo per Workflow run timeline; one commit per capsule-producing step attempt.
-
-```txt
-.capsule/
-  run.json
-  index.json
-steps/
-  001-charge-customer/
-    attempts/
-      1/
-        manifest.json          # or failure.json for failed attempts
-        input.hash.json
-        output.json
-        effects/
-          001-stripe-payment-intent-create/
-            record.json
-            request.json
-            response.json
-        files/
-          output/answer.md
-```
-
-What Git gives you:
-
-```txt
-git log --oneline      # chronological durable step timeline
-git diff b2..c3        # exact files changed by a step or retry
-git show c3:steps/001-charge-customer/attempts/1/manifest.json
-```
-
-## Failure Behavior
-
-When the producer throws, Capsule rethrows the original error so `step.do()` retry semantics keep working. If the attempt crossed a side-effect boundary (files written, effects recorded, or an idempotency key present), Capsule first commits a `failure.json` recording the error, retryability, and whether an external effect may have succeeded. If a prior attempt already committed a success for the same logical step and input, a later retry reuses that success instead of re-running the producer.
-
-Capsule's own errors are tagged `CapsuleError`s with codes `INVALID_CAPSULE_REQUEST`, `CAPSULE_CONFLICT`, `BACKEND_UNAVAILABLE`, `BACKEND_WRITE_FAILED`, and `OPERATION_FAILED`, plus a `retryable` flag.
-
-## When To Use Capsule vs. Stream Returns
-
-JavaScript Workflows can return a `ReadableStream<Uint8Array>` from `step.do()` for one large binary output consumed within the run. Use Capsule when the output is more than one blob:
-
-- multi-file trees with paths and media types
-- versioned snapshots, diffs, and retry visibility per durable step
-- side-effect audit trails for providers (payments, AI, email, webhooks)
-- artifacts that outlive Workflow state retention or are consumed by other systems
-
-## Limits
-
-- `cloudflare(...)` buffers a short-lived working tree in Worker memory via `isomorphic-git`; fine for small-to-medium artifacts, not for huge dumps.
-- Stream bodies passed to `files.write()` are buffered before commit.
+Capsules stores exactly the provider result and summary your code returns. Redact secrets and sensitive provider fields before returning or summarizing them.
 
 ## Development
 
@@ -204,5 +252,3 @@ pnpm typecheck
 pnpm test
 pnpm build
 ```
-
-See `examples/workflow-capsule-mvp` in this repository for a complete Worker + Workflow example.

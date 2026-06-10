@@ -1,362 +1,457 @@
-import { CapsuleError, invalidRequest, toCapsuleFailure } from "./errors.js";
 import {
-  slugify,
-  validateCapsuleName,
-} from "./validation.js";
-import type {
-  CapsuleAdapter,
-  ArtifactRunSession,
-  ArtifactStepSession,
-  CapsuleRefs,
-  CapsuleRunContext,
-  CapsuleSpec,
-  CaptureOptions,
-  CapsulesService,
-  InspectedRun,
-  InternalCapsuleAdapter,
-  OpenRunInput,
-  RunIndexEntry,
-  StandardSchemaV1,
-  StepIdentity,
-  StepManifest,
-} from "./types.js";
-import { AttemptRecorder } from "./attempt-recorder.js";
-import { hashCapsuleInput, hashWorkflowRun } from "./content-digest.js";
+  CapsuleError,
+  invalidExternalCall,
+  reconcileFailed,
+  sideEffectAmbiguous,
+  sideEffectConflict,
+  storageFailed,
+} from "./errors.js";
+import { hashExternalCallKey, hashExternalRequest, hashWorkflowRun } from "./content-digest.js";
+import { validateCapsuleName } from "./validation.js";
 import {
   DEFAULT_BRANCH,
-  RUN_INDEX_PATH,
-  RUN_JSON_PATH,
-  attemptDirPath,
-  commitMessageFor,
-  failureCommitMessageFor,
-  failurePath,
   INIT_COMMIT_MESSAGE,
-  inputHashPath,
-  manifestPath,
-  outputPath,
+  RUN_JSON_PATH,
+  callAttemptErrorPath,
+  callAttemptStartedPath,
+  callCommittedPath,
+  callDirPath,
+  callReconciledPath,
+  callRequestPath,
+  callStartedPath,
+  callSummaryPath,
+  commitMessageForCommitted,
+  commitMessageForError,
+  commitMessageForReconciled,
+  commitMessageForStarted,
   runRepoName,
-  stepDirName,
 } from "./repo-layout.js";
-import { appendIndexEntry, readRunIndex } from "./run-index.js";
+import type {
+  ArtifactBackend,
+  ArtifactRunSession,
+  CallIdentity,
+  CallRequestRecord,
+  CapsuleAdapter,
+  Capsules,
+  CommittedCallRecord,
+  ExternalCall,
+  ExternalCallRunContext,
+  ExternalCallSpec,
+  InternalCapsuleAdapter,
+  ProviderSummary,
+  ReconcileResult,
+  StandardSchemaV1,
+  StartedCallRecord,
+  AttemptErrorRecord,
+} from "./types.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
-/**
- * Serialized `output` must stay far below the 1 MiB non-stream `step.do()`
- * result limit, because CapsuleRefs wraps it with metadata and the whole
- * object is persisted as Workflow state.
- */
-const MAX_OUTPUT_BYTES = 256 * 1024;
-
 export type CreateCapsulesOptions = {
   readonly adapter: CapsuleAdapter;
-  readonly maxOutputBytes?: number;
-  readonly maxFileBytes?: number;
 };
 
-export function createCapsules(options: CreateCapsulesOptions): CapsulesService {
-  return new CapsulesImpl(options.adapter, optionalLimits(options));
+export function defineExternalCall<Request, Result>(
+  spec: ExternalCallSpec<Request, Result>,
+): ExternalCall<Request, Result> {
+  validateExternalCallSpec(spec);
+  return spec;
 }
 
-class CapsulesImpl implements CapsulesService {
-  private readonly adapter: InternalCapsuleAdapter;
-  private readonly maxOutputBytes: number;
-  private readonly maxFileBytes: number | undefined;
+export function createCapsules(options: CreateCapsulesOptions): Capsules {
+  return new CapsulesImpl(options.adapter);
+}
 
-  constructor(
-    adapter: CapsuleAdapter,
-    options: { readonly maxOutputBytes?: number; readonly maxFileBytes?: number } = {},
-  ) {
+class CapsulesImpl implements Capsules {
+  private readonly adapter: InternalCapsuleAdapter;
+
+  constructor(adapter: CapsuleAdapter) {
     this.adapter = adapter as InternalCapsuleAdapter;
-    this.maxOutputBytes = options.maxOutputBytes ?? MAX_OUTPUT_BYTES;
-    this.maxFileBytes = options.maxFileBytes;
   }
 
-  async capture<Input, Output>(
-    specOrOptions: CapsuleSpec<Input, Output> | CaptureOptions<Input>,
-    run?: (ctx: CapsuleRunContext<Input>) => Promise<Output>,
-  ): Promise<CapsuleRefs<Output>> {
-    const spec = normalizeCaptureSpec(specOrOptions, run);
-    const capsuleName = validateCapsuleName(spec.name);
-    const input = spec.inputSchema
-      ? await validateInput(spec.inputSchema, spec.input, capsuleName)
-      : spec.input;
-    const identityCtx = await resolveIdentity(spec, input);
+  async call<Request, Result>(
+    externalCall: ExternalCall<Request, Result>,
+    context: ExternalCallRunContext<Request>,
+  ): Promise<Result> {
+    validateExternalCallSpec(externalCall);
+    const runContext = validateRunContext(context);
+    const request = externalCall.request !== undefined
+      ? await validateSchema(externalCall.request, context.request, externalCall.name, "request")
+      : context.request;
+    const identity = await resolveCallIdentity(externalCall.name, runContext, request);
+    const session = await this.openRun(identity);
+    await assertRequestCompatible(session, identity, runContext);
 
-    const backend = this.adapter.backend;
-    const session = await backend.openRun(identityCtx.openRun);
-    const step = identityCtx.step;
-
-    const existing = await backend.resolveStep(session, step);
-    if (existing !== null) {
-      if (existing.manifest.input.hash !== step.inputHash) {
-        throw new CapsuleError(
-      "CAPSULE_CONFLICT",
-          `Capsule "${capsuleName}" already has a committed logical step at ${step.stepDir} ` +
-            `with input hash ${existing.manifest.input.hash}, but this call provided ` +
-            `${step.inputHash}. The committed artifact is intact and the callback was not re-run. ` +
-            `Use a different step name/count or pass the same input.`,
-        );
-      }
-      return refsFromResolved<Output>(this.adapter.kind, session, existing);
+    const committed = await readJson<CommittedCallRecord<Result>>(
+      session,
+      callCommittedPath(identity.callDir),
+    );
+    if (committed !== null) {
+      return validateStoredResult(externalCall, committed.result);
     }
 
-    const stepSession = await backend.beginStep(session, step);
-    const recorder = new AttemptRecorder(
-      identityCtx,
-      stepSession,
-      spec.dedupe?.key,
-      this.maxFileBytes,
+    const reconciled = await readJson<CommittedCallRecord<Result>>(
+      session,
+      callReconciledPath(identity.callDir),
     );
-    const startedAt = new Date();
-    const parentAtStart = await session.head();
+    if (reconciled !== null) {
+      return validateStoredResult(externalCall, reconciled.result);
+    }
 
-    let output: Output;
+    const started = await readJson<StartedCallRecord>(
+      session,
+      callStartedPath(identity.callDir),
+    );
+    if (started !== null) {
+      const recovered = await this.applyRecovery(externalCall, identity, runContext, request, session);
+      if (recovered !== undefined) return recovered;
+    }
+
+    await this.recordStarted(session, identity, runContext);
+
+    let result: Result;
     try {
-      output = await spec.run({
-        input,
-        files: {
-          write: (path, body, options) => recorder.write(path, body, options),
-        },
-        effects: {
-          record: (kind, record) => recorder.recordEffect(kind, record),
-        },
-        ...(step.idempotencyKey !== undefined && {
-          idempotencyKey: step.idempotencyKey,
-        }),
+      result = await externalCall.execute({
+        request,
+        key: context.key,
+        workflow: context.workflow,
+        step: context.step,
+        attempt: context.step.attempt,
       });
     } catch (error) {
-      await this.recordFailure(session, stepSession, recorder, error);
+      await this.recordAttemptError(session, identity, runContext, error);
       throw error;
     }
 
-    const outputBytes = serializeOutput(capsuleName, output, this.maxOutputBytes);
-    const manifest = recorder.buildManifest(startedAt, output, {
-      repo: session.repo,
-      branch: session.branch,
-      ...(parentAtStart !== undefined && { parent: parentAtStart }),
+    const validatedResult = externalCall.result !== undefined
+      ? await validateSchema(externalCall.result, result, externalCall.name, "result")
+      : result;
+    const summary = externalCall.summary?.({
+      request,
+      result: validatedResult,
+      key: context.key,
+      workflow: context.workflow,
+      step: context.step,
     });
-    stepSession.stage(outputPath(step.attemptDir), outputBytes);
-    stepSession.stage(
-      inputHashPath(step.attemptDir),
-      encoder.encode(JSON.stringify({ hash: step.inputHash }, null, 2) + "\n"),
-    );
-    stepSession.stage(
-      manifestPath(step.attemptDir),
-      encoder.encode(JSON.stringify(manifest, null, 2) + "\n"),
-    );
-    await stageIndexEntry(session, stepSession, {
-      stepDir: step.stepDir,
-      attempt: step.attempt,
-      capsule: capsuleName,
-      inputHash: step.inputHash,
-      status: "committed",
-      manifestPath: manifestPath(step.attemptDir),
-    });
-
-    const committed = await backend.commitStep(session, stepSession, {
-      message: commitMessageFor(step),
-    });
-
-    return {
-      capsule: {
-        name: capsuleName,
-        id: step.capsuleId,
-        inputHash: step.inputHash,
-        ...(step.idempotencyKey !== undefined && {
-          idempotencyKey: step.idempotencyKey,
-        }),
-        ...(spec.dedupe !== undefined && { dedupeKey: spec.dedupe.key }),
-      },
-      workflow: {
-        name: identityCtx.workflowName,
-        instanceId: identityCtx.instanceId,
-        stepName: step.stepName,
-        stepCount: step.stepCount,
-        attempt: step.attempt,
-      },
-      artifact: {
-        adapter: this.adapter.kind,
-        repo: session.repo,
-        branch: session.branch,
-        commit: committed.commit,
-        ...(committed.parent !== undefined && { parent: committed.parent }),
-      },
-      files: recorder.fileRefs(),
-      effects: recorder.effectRefs(),
-      effectCount: recorder.effectRefs().length,
-      output,
-      manifestPath: manifestPath(step.attemptDir),
-      ...(committed.parent !== undefined && {
-        diff: { base: committed.parent, head: committed.commit },
-      }),
-    };
+    await this.recordCommitted(session, identity, runContext, validatedResult, summary, "committed");
+    return validatedResult;
   }
 
-  async inspectRun(target: {
-    workflowName: string;
-    instanceId: string;
-  }): Promise<InspectedRun> {
+  private async openRun(identity: CallIdentity): Promise<ArtifactRunSession> {
     const identityHash = await hashWorkflowRun({
-      workflowName: target.workflowName,
-      instanceId: target.instanceId,
+      workflowName: identity.workflowName,
+      instanceId: identity.instanceId,
     });
-    const repoName = runRepoName(
-      target.workflowName,
-      target.instanceId,
-      identityHash.slice("sha256:".length),
-    );
-    const session = await this.adapter.backend.openRun({
-      workflowName: target.workflowName,
-      instanceId: target.instanceId,
-      repoName,
-      branch: DEFAULT_BRANCH,
-      initFiles: initRunFiles(target.workflowName, target.instanceId),
-      initMessage: INIT_COMMIT_MESSAGE,
-    });
-    const index = await readRunIndex(session);
-    const runJson = await session.readFile(RUN_JSON_PATH);
-    const head = await session.head();
-    return {
-      repo: session.repo,
-      branch: session.branch,
-      ...(head !== undefined && { head }),
-      run:
-        runJson !== null
-          ? (JSON.parse(decoder.decode(runJson)) as InspectedRun["run"])
-          : null,
-      entries: index.entries,
-    };
+    try {
+      return await this.adapter.backend.openRun({
+        workflowName: identity.workflowName,
+        instanceId: identity.instanceId,
+        repoName: runRepoName(
+          identity.workflowName,
+          identity.instanceId,
+          identityHash.slice("sha256:".length),
+        ),
+        branch: DEFAULT_BRANCH,
+        initFiles: initRunFiles(identity.workflowName, identity.instanceId),
+        initMessage: INIT_COMMIT_MESSAGE,
+      });
+    } catch (cause) {
+      if (cause instanceof CapsuleError) throw cause;
+      throw storageFailed(
+        `Could not open call-history storage for workflow "${identity.workflowName}" instance ` +
+          `"${identity.instanceId}". Provider code was not invoked; retry after fixing storage access.`,
+        cause,
+      );
+    }
   }
 
-  /**
-   * Failure policy `auto`: write a failure manifest and commit it when the
-   * attempt crossed a side-effect boundary (files staged, effects recorded,
-   * or an idempotency key present). Otherwise skip the empty failure commit.
-   * The original error is always rethrown by the caller so `step.do()`
-   * retries keep working; a failed failure-commit must never mask it.
-   */
-  private async recordFailure(
+  private async applyRecovery<Request, Result>(
+    externalCall: ExternalCall<Request, Result>,
+    identity: CallIdentity,
+    runContext: ValidRunContext,
+    request: Request,
     session: ArtifactRunSession,
-    stepSession: ArtifactStepSession,
-    recorder: AttemptRecorder,
+  ): Promise<Result | undefined> {
+    if (externalCall.recovery === "idempotent-call") return undefined;
+    if (externalCall.recovery === "fail-closed") {
+      throw ambiguous(identity, "A prior attempt crossed the external side-effect boundary but no committed result was recorded.");
+    }
+
+    let reconciliation: ReconcileResult<Result>;
+    try {
+      reconciliation = await externalCall.recovery.reconcile({
+        request,
+        key: runContext.key,
+        workflow: runContext.workflow,
+        step: runContext.step,
+        attempt: runContext.step.attempt,
+      });
+    } catch (cause) {
+      throw reconcileFailed(
+        `Reconciliation for external call "${identity.callName}" failed after a prior started record. ` +
+          `Provider code was not invoked. Retry after fixing the reconciliation path; prior records remain intact.`,
+        cause,
+      );
+    }
+
+    if (reconciliation.status === "found") {
+      const result = externalCall.result !== undefined
+        ? await validateSchema(externalCall.result, reconciliation.result, externalCall.name, "result")
+        : reconciliation.result;
+      const summary = externalCall.summary?.({
+        request,
+        result,
+        key: runContext.key,
+        workflow: runContext.workflow,
+        step: runContext.step,
+      });
+      await this.recordCommitted(session, identity, runContext, result, summary, "reconciled");
+      return result;
+    }
+
+    const reason = reconciliation.status === "inconclusive" && reconciliation.reason !== undefined
+      ? ` Reconciliation was inconclusive: ${reconciliation.reason}.`
+      : reconciliation.status === "not_found"
+        ? " Reconciliation did not find a provider result; Capsules does not treat absence as safe to retry."
+        : " Reconciliation was inconclusive.";
+    throw ambiguous(
+      identity,
+      `A prior attempt crossed the external side-effect boundary but no committed result was recorded.${reason}`,
+    );
+  }
+
+  private async recordStarted(
+    session: ArtifactRunSession,
+    identity: CallIdentity,
+    runContext: ValidRunContext,
+  ): Promise<void> {
+    const now = new Date().toISOString();
+    const requestRecord: CallRequestRecord = {
+      schemaVersion: 1,
+      callName: identity.callName,
+      keyHash: identity.keyHash,
+      requestDigest: identity.requestDigest,
+      workflow: { name: identity.workflowName, instanceId: identity.instanceId },
+      step: { name: runContext.step.step.name, count: runContext.step.step.count },
+      createdAt: now,
+    };
+    const startedRecord: StartedCallRecord = {
+      schemaVersion: 1,
+      status: "started",
+      attempt: runContext.step.attempt,
+      startedAt: now,
+    };
+    const write = await this.adapter.backend.beginWrite();
+    if ((await session.readFile(callRequestPath(identity.callDir))) === null) {
+      writeJson(write, callRequestPath(identity.callDir), requestRecord);
+    }
+    writeJson(write, callStartedPath(identity.callDir), startedRecord);
+    writeJson(write, callAttemptStartedPath(identity.callDir, runContext.step.attempt), startedRecord);
+    await commitStorage(
+      this.adapter.backend,
+      session,
+      write,
+      commitMessageForStarted(identity.callName, runContext.step.attempt),
+      `Could not persist the started record for external call "${identity.callName}". ` +
+        `Provider code was not invoked; retry after fixing call-history storage.`,
+    );
+  }
+
+  private async recordCommitted<Result>(
+    session: ArtifactRunSession,
+    identity: CallIdentity,
+    runContext: ValidRunContext,
+    result: Result,
+    summary: ProviderSummary | undefined,
+    status: "committed" | "reconciled",
+  ): Promise<void> {
+    const record: CommittedCallRecord<Result> = {
+      schemaVersion: 1,
+      status,
+      attempt: runContext.step.attempt,
+      result,
+      committedAt: new Date().toISOString(),
+    };
+    const write = await this.adapter.backend.beginWrite();
+    writeJson(write, status === "committed" ? callCommittedPath(identity.callDir) : callReconciledPath(identity.callDir), record);
+    if (summary !== undefined) {
+      writeJson(write, callSummaryPath(identity.callDir), summary);
+    }
+    await commitStorage(
+      this.adapter.backend,
+      session,
+      write,
+      status === "committed"
+        ? commitMessageForCommitted(identity.callName, runContext.step.attempt)
+        : commitMessageForReconciled(identity.callName, runContext.step.attempt),
+      `Provider code for external call "${identity.callName}" returned, but Capsules could not persist the ${status} record. ` +
+        `A retry must use the configured recovery policy; prior records remain intact.`,
+      false,
+    );
+  }
+
+  private async recordAttemptError(
+    session: ArtifactRunSession,
+    identity: CallIdentity,
+    runContext: ValidRunContext,
     error: unknown,
   ): Promise<void> {
-    const step = stepSession.identity;
-    const failure = toCapsuleFailure(error);
-    const shouldRecord =
-      stepSession.hasStagedFiles() ||
-      recorder.effects().length > 0 ||
-      step.idempotencyKey !== undefined;
-    if (!shouldRecord) return;
-
+    const record: AttemptErrorRecord = {
+      schemaVersion: 1,
+      status: "error",
+      attempt: runContext.step.attempt,
+      error: {
+        name: error instanceof Error ? error.name : "Error",
+        message: error instanceof Error ? error.message : String(error),
+      },
+      failedAt: new Date().toISOString(),
+    };
     try {
-      const failureManifest = recorder.buildFailureManifest(failure, error);
-      stepSession.stage(
-        failurePath(step.attemptDir),
-        encoder.encode(JSON.stringify(failureManifest, null, 2) + "\n"),
-      );
-      await stageIndexEntry(session, stepSession, {
-        stepDir: step.stepDir,
-        attempt: step.attempt,
-        capsule: step.capsuleName,
-        inputHash: step.inputHash,
-        status: "failed",
-        manifestPath: failurePath(step.attemptDir),
+      const write = await this.adapter.backend.beginWrite();
+      writeJson(write, callAttemptErrorPath(identity.callDir, runContext.step.attempt), record);
+      await this.adapter.backend.commitWrite(session, write, {
+        message: commitMessageForError(identity.callName, runContext.step.attempt),
       });
-      const backend = this.adapter.backend;
-      if (backend.abortStep !== undefined) {
-        await backend.abortStep(session, stepSession, failure);
-      } else {
-        await backend.commitStep(session, stepSession, {
-          message: failureCommitMessageFor(step),
-        });
-      }
     } catch {
-      // Best effort only. The committed history is unchanged; the original
-      // producer error propagates to step.do() for retry.
+      // Best effort only. The provider error must propagate to Workflows.
     }
   }
 }
 
-type IdentityContext = {
-  workflowName: string;
-  instanceId: string;
-  step: StepIdentity;
-  openRun: OpenRunInput;
+type ValidRunContext = {
+  readonly workflow: ExternalCallRunContext<unknown>["workflow"];
+  readonly step: ExternalCallRunContext<unknown>["step"];
+  readonly key: string;
 };
 
-async function resolveIdentity(
-  spec: CapsuleSpec<unknown, unknown>,
-  input: unknown,
-): Promise<IdentityContext> {
-  const workflowName = spec.workflow?.workflowName;
-  const instanceId = spec.workflow?.instanceId;
-  if (typeof workflowName !== "string" || workflowName.length === 0) {
-    throw invalidRequest(
-      "capture() requires `workflow` with a non-empty `workflowName`. " +
-        "Pass the WorkflowEvent received by run().",
-    );
-  }
-  if (typeof instanceId !== "string" || instanceId.length === 0) {
-    throw invalidRequest(
-      "capture() requires `workflow` with a non-empty `instanceId`. " +
-        "Pass the WorkflowEvent received by run().",
-    );
-  }
-  const stepName = spec.step?.step?.name;
-  const stepCount = spec.step?.step?.count;
-  const attempt = spec.step?.attempt;
-  if (
-    typeof stepName !== "string" ||
-    typeof stepCount !== "number" ||
-    typeof attempt !== "number"
-  ) {
-    throw invalidRequest(
-      "capture() requires `step` with `step.name`, `step.count`, and `attempt`. " +
-        "Pass the WorkflowStepContext that step.do() provides to its callback.",
-    );
-  }
-  const inputHash = await hashCapsuleInput(input);
-  const identityHash = await hashWorkflowRun({ workflowName, instanceId });
-  const stepDir = stepDirName(stepCount, stepName);
-  const step: StepIdentity = {
-    capsuleName: spec.name,
-    capsuleId: spec.id ?? `${instanceId}:${slugify(stepName)}:${stepCount}`,
-    stepName,
-    stepCount,
-    attempt,
-    inputHash,
-    ...(spec.idempotencyKey !== undefined && {
-      idempotencyKey: spec.idempotencyKey,
-    }),
-    stepDir,
-    attemptDir: attemptDirPath(stepDir, attempt),
-  };
+async function resolveCallIdentity(
+  callName: string,
+  context: ValidRunContext,
+  request: unknown,
+): Promise<CallIdentity> {
+  const keyHash = await hashExternalCallKey(context.key);
+  const requestDigest = await hashExternalRequest(request);
   return {
-    workflowName,
-    instanceId,
-    step,
-    openRun: {
-      workflowName,
-      instanceId,
-      repoName: runRepoName(
-        workflowName,
-        instanceId,
-        identityHash.slice("sha256:".length),
-      ),
-      branch: DEFAULT_BRANCH,
-      initFiles: initRunFiles(workflowName, instanceId),
-      initMessage: INIT_COMMIT_MESSAGE,
-    },
+    workflowName: context.workflow.workflowName,
+    instanceId: context.workflow.instanceId,
+    callName,
+    key: context.key,
+    keyHash,
+    requestDigest,
+    callDir: callDirPath(keyHash),
   };
 }
 
-function initRunFiles(
-  workflowName: string,
-  instanceId: string,
-): Map<string, Uint8Array> {
+async function assertRequestCompatible(
+  session: ArtifactRunSession,
+  identity: CallIdentity,
+  context: ValidRunContext,
+): Promise<void> {
+  const existing = await readJson<CallRequestRecord>(session, callRequestPath(identity.callDir));
+  if (existing === null) return;
+  if (existing.requestDigest === identity.requestDigest && existing.callName === identity.callName) return;
+  throw sideEffectConflict(
+    `External call key for "${identity.callName}" already has a recorded request for workflow ` +
+      `"${identity.workflowName}" instance "${identity.instanceId}" step "${context.step.step.name}". ` +
+      `Existing digest is ${existing.requestDigest}; new digest is ${identity.requestDigest}. ` +
+      `Provider code was not invoked. Use the same request for this key or choose a new key.`,
+  );
+}
+
+function validateRunContext<Request>(context: ExternalCallRunContext<Request>): ValidRunContext {
+  if (typeof context.workflow?.workflowName !== "string" || context.workflow.workflowName.length === 0) {
+    throw invalidExternalCall("capsules.call(...) requires workflow.workflowName. Pass the WorkflowEvent received by run().");
+  }
+  if (typeof context.workflow.instanceId !== "string" || context.workflow.instanceId.length === 0) {
+    throw invalidExternalCall("capsules.call(...) requires workflow.instanceId. Pass the WorkflowEvent received by run().");
+  }
+  if (typeof context.step?.step?.name !== "string" || context.step.step.name.length === 0) {
+    throw invalidExternalCall("capsules.call(...) requires step.step.name. Pass the WorkflowStepContext from step.do().");
+  }
+  if (typeof context.step.step.count !== "number" || typeof context.step.attempt !== "number") {
+    throw invalidExternalCall("capsules.call(...) requires step.step.count and step.attempt. Pass the WorkflowStepContext from step.do().");
+  }
+  if (typeof context.key !== "string" || context.key.length === 0) {
+    throw invalidExternalCall("capsules.call(...) requires a non-empty stable external side-effect key. Provider code was not invoked.");
+  }
+  return { workflow: context.workflow, step: context.step, key: context.key };
+}
+
+function validateExternalCallSpec<Request, Result>(
+  spec: ExternalCallSpec<Request, Result>,
+): void {
+  validateCapsuleName(spec.name);
+  if (typeof spec.execute !== "function") {
+    throw invalidExternalCall(`External call "${spec.name}" requires an execute function.`);
+  }
+  if (
+    spec.recovery !== "idempotent-call" &&
+    spec.recovery !== "fail-closed" &&
+    (spec.recovery === null || typeof spec.recovery !== "object" || typeof spec.recovery.reconcile !== "function")
+  ) {
+    throw invalidExternalCall(
+      `External call "${spec.name}" requires recovery "idempotent-call", "fail-closed", or { reconcile }.`,
+    );
+  }
+}
+
+async function validateStoredResult<Request, Result>(
+  externalCall: ExternalCall<Request, Result>,
+  value: Result,
+): Promise<Result> {
+  return externalCall.result !== undefined
+    ? validateSchema(externalCall.result, value, externalCall.name, "result")
+    : value;
+}
+
+async function validateSchema<T>(
+  schema: StandardSchemaV1<unknown, T>,
+  value: unknown,
+  callName: string,
+  label: "request" | "result",
+): Promise<T> {
+  const result = await schema["~standard"].validate(value);
+  if (result.issues !== undefined) {
+    const detail = result.issues.map((issue) => issue.message).join("; ");
+    throw invalidExternalCall(
+      `External call "${callName}" ${label} failed schema validation: ${detail}. Provider code was not invoked when validation happened before execution.`,
+    );
+  }
+  return result.value;
+}
+
+async function readJson<T>(session: ArtifactRunSession, path: string): Promise<T | null> {
+  const bytes = await session.readFile(path);
+  if (bytes === null) return null;
+  return JSON.parse(decoder.decode(bytes)) as T;
+}
+
+function writeJson(
+  write: { stage(path: string, bytes: Uint8Array): void },
+  path: string,
+  value: unknown,
+): void {
+  write.stage(path, encoder.encode(JSON.stringify(value, null, 2) + "\n"));
+}
+
+async function commitStorage(
+  backend: ArtifactBackend,
+  session: ArtifactRunSession,
+  write: { stage(path: string, bytes: Uint8Array): void },
+  message: string,
+  failureMessage: string,
+  retryable = true,
+): Promise<void> {
+  try {
+    await backend.commitWrite(session, write, { message });
+  } catch (cause) {
+    if (cause instanceof CapsuleError) throw cause;
+    throw storageFailed(failureMessage, cause, { retryable });
+  }
+}
+
+function initRunFiles(workflowName: string, instanceId: string): Map<string, Uint8Array> {
   const runJson = {
     schemaVersion: 1,
     workflowName,
@@ -368,144 +463,9 @@ function initRunFiles(
   ]);
 }
 
-async function stageIndexEntry(
-  session: ArtifactRunSession,
-  stepSession: ArtifactStepSession,
-  entry: RunIndexEntry,
-): Promise<void> {
-  const index = await readRunIndex(session);
-  stepSession.stage(RUN_INDEX_PATH, appendIndexEntry(index, entry));
-}
-
-function serializeOutput(
-  capsuleName: string,
-  output: unknown,
-  maxOutputBytes: number,
-): Uint8Array {
-  let json: string;
-  try {
-    json = JSON.stringify(output ?? null, null, 2) + "\n";
-  } catch (cause) {
-    throw new CapsuleError(
-      "INVALID_CAPSULE_REQUEST",
-      `Capsule "${capsuleName}" returned an output that cannot be JSON-serialized. ` +
-        `Return small serializable refs (ids, paths, labels); keep file contents in files.write().`,
-      { cause },
-    );
-  }
-  const bytes = encoder.encode(json);
-  if (bytes.byteLength > maxOutputBytes) {
-    throw new CapsuleError(
-      "INVALID_CAPSULE_REQUEST",
-      `Capsule "${capsuleName}" returned ${bytes.byteLength} bytes of output; the limit is ` +
-        `${maxOutputBytes} bytes because output is stored as Workflow state. ` +
-        `Write large content with files.write() and return its path instead. ` +
-        `All files written before this error were not committed.`,
-    );
-  }
-  return bytes;
-}
-
-async function validateInput<Input>(
-  schema: StandardSchemaV1<unknown, Input>,
-  input: unknown,
-  capsuleName: string,
-): Promise<Input> {
-  const result = await schema["~standard"].validate(input);
-  if (result.issues !== undefined) {
-    const detail = result.issues.map((issue) => issue.message).join("; ");
-    throw invalidRequest(
-      `Capsule "${capsuleName}" input failed schema validation: ${detail}. ` +
-        `Nothing was written or committed.`,
-    );
-  }
-  return result.value;
-}
-
-function refsFromResolved<Output>(
-  adapterKind: string,
-  session: ArtifactRunSession,
-  resolved: { manifest: StepManifest; commit: string; parent?: string },
-): CapsuleRefs<Output> {
-  return {
-    capsule: {
-      name: resolved.manifest.capsule.name,
-      id: resolved.manifest.capsule.id,
-      inputHash: resolved.manifest.input.hash,
-      ...(resolved.manifest.capsule.idempotencyKey !== undefined && {
-        idempotencyKey: resolved.manifest.capsule.idempotencyKey,
-      }),
-      ...(resolved.manifest.capsule.dedupeKey !== undefined && {
-        dedupeKey: resolved.manifest.capsule.dedupeKey,
-      }),
-    },
-    workflow: {
-      name: resolved.manifest.workflow.name,
-      instanceId: resolved.manifest.workflow.instanceId,
-      stepName: resolved.manifest.step.name,
-      stepCount: resolved.manifest.step.count,
-      attempt: resolved.manifest.step.attempt,
-    },
-    artifact: {
-      adapter: adapterKind,
-      repo: session.repo,
-      branch: session.branch,
-      commit: resolved.commit,
-      ...(resolved.parent !== undefined && { parent: resolved.parent }),
-    },
-    files: { ...resolved.manifest.exposedFiles },
-    effects: resolved.manifest.effects.map((effect) => ({
-      kind: effect.kind,
-      path: effect.path,
-      seq: effect.seq,
-      ...(effect.externalId !== undefined && { externalId: effect.externalId }),
-      ...(effect.httpStatus !== undefined && { httpStatus: effect.httpStatus }),
-      ...(effect.idempotencyKey !== undefined && {
-        idempotencyKey: effect.idempotencyKey,
-      }),
-      ...(effect.request !== undefined && { request: effect.request }),
-      ...(effect.response !== undefined && { response: effect.response }),
-    })),
-    output: resolved.manifest.output as Output,
-    effectCount: resolved.manifest.effects.length,
-    manifestPath: manifestPath(
-      attemptDirPath(
-        stepDirName(resolved.manifest.step.count, resolved.manifest.step.name),
-        resolved.manifest.step.attempt,
-      ),
-    ),
-    ...(resolved.parent !== undefined && {
-      diff: { base: resolved.parent, head: resolved.commit },
-    }),
-  };
-}
-
-function optionalLimits(options: CreateCapsulesOptions): {
-  readonly maxOutputBytes?: number;
-  readonly maxFileBytes?: number;
-} {
-  return {
-    ...(options.maxOutputBytes !== undefined && {
-      maxOutputBytes: options.maxOutputBytes,
-    }),
-    ...(options.maxFileBytes !== undefined && {
-      maxFileBytes: options.maxFileBytes,
-    }),
-  };
-}
-
-function normalizeCaptureSpec<Input, Output>(
-  specOrOptions: CapsuleSpec<Input, Output> | CaptureOptions<Input>,
-  run: ((ctx: CapsuleRunContext<Input>) => Promise<Output>) | undefined,
-): CapsuleSpec<Input, Output> {
-  if (run !== undefined) {
-    return { ...specOrOptions, run } as CapsuleSpec<Input, Output>;
-  }
-  if ("run" in specOrOptions && typeof specOrOptions.run === "function") {
-    return specOrOptions as CapsuleSpec<Input, Output>;
-  }
-  throw invalidRequest(
-    "capture() requires a producer callback. Pass capture(options, async (ctx) => ...), " +
-      "or include `run` on the capture spec.",
+function ambiguous(identity: CallIdentity, reason: string): CapsuleError {
+  return sideEffectAmbiguous(
+    `${reason} External call "${identity.callName}" with key hash ${identity.keyHash} is ambiguous. ` +
+      `Provider code was not invoked on this retry. Reconcile provider state manually or use a recovery policy that can prove the result.`,
   );
 }

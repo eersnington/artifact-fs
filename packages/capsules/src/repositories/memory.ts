@@ -1,4 +1,4 @@
-import type { CommittedStep } from "../core/types.js";
+import type { CommittedRecord } from "../core/types.js";
 import { digestFileContent, sha256Hex } from "../core/content-digest.js";
 import {
   SerialCommitQueue,
@@ -78,19 +78,6 @@ function createMemoryRepositorySession(repo: MemoryRepo): RepositorySession {
         commitMemoryFiles(repo, input.files, input.message),
       );
     },
-
-    async findCommitForPath(path) {
-      for (let i = repo.commits.length - 1; i >= 0; i--) {
-        const commit = repo.commits[i]!;
-        if (commit.changedPaths.has(path)) {
-          return {
-            commit: commit.sha,
-            ...(commit.parent !== undefined ? { parent: commit.parent } : {}),
-          };
-        }
-      }
-      return undefined;
-    },
   };
 }
 
@@ -98,7 +85,7 @@ async function commitMemoryFiles(
   repo: MemoryRepo,
   files: ReadonlyMap<string, Uint8Array>,
   message: string,
-): Promise<CommittedStep> {
+): Promise<CommittedRecord> {
   const parent = repo.commits.at(-1);
   const tree = new Map(parent?.tree ?? []);
   for (const [path, bytes] of files) {

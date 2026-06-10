@@ -1,5 +1,5 @@
-import { CapsuleError, invalidRequest } from "../core/errors.js";
-import type { CommittedStep } from "../core/types.js";
+import { CapsuleError, invalidExternalCall } from "../core/errors.js";
+import type { CommittedRecord } from "../core/types.js";
 import { MemoryFS } from "./isomorphic-git-memory-fs.js";
 import {
   SerialCommitQueue,
@@ -57,7 +57,7 @@ export type CloudflareRepositoryStoreOptions = {
 
 /**
  * Git engine seam. The Artifacts binding manages repos and tokens; this Git
- * writer handles file trees, commits, and pushes because the binding does not
+ * writer handles call-history commits and pushes because the binding does not
  * expose direct file-write or commit methods. Contract tests inject a fake so
  * they run without the network.
  */
@@ -77,7 +77,7 @@ export type PushableGitWorkspace = {
   commitAndPush(
     files: ReadonlyMap<string, Uint8Array>,
     message: string,
-  ): Promise<CommittedStep>;
+  ): Promise<CommittedRecord>;
 };
 
 const DEFAULT_AUTHOR = {
@@ -157,9 +157,9 @@ export function cloudflareRepositoryStore(
       const handle = await binding.get(name);
       const remote = handle.remote ?? options?.remoteFor?.(name);
       if (remote === undefined) {
-        throw invalidRequest(
+        throw invalidExternalCall(
           `Artifacts repo "${name}" exists but the binding handle did not expose a remote URL. ` +
-            `Pass cloudflare(binding, { remoteFor: (repo) => url }) so Capsule can push to it.`,
+          `Pass cloudflare(binding, { remoteFor: (repo) => url }) so Capsules can push to it.`,
         );
       }
       const token = await handle.createToken("write", ttl);
@@ -182,7 +182,7 @@ export function cloudflareRepositoryStore(
       };
     } catch (createError) {
       throw new CapsuleError(
-        "BACKEND_UNAVAILABLE",
+        "SIDE_EFFECT_STORAGE_FAILED",
         `Could not open Artifacts repo "${name}": get() failed (${safeErrorMessage(getError)}) ` +
           `and create() failed (${safeErrorMessage(createError)}). No commit was made. ` +
           `Check the Artifacts binding configuration and namespace permissions, then retry.`,
@@ -230,7 +230,7 @@ function createIsomorphicGitWorkspaceFactory(): GitWorkspaceFactory {
           });
         } catch (error) {
           throw new CapsuleError(
-            "BACKEND_UNAVAILABLE",
+            "SIDE_EFFECT_STORAGE_FAILED",
             `Cloning Artifacts repo from its remote failed: ${safeErrorMessage(error)}. ` +
               `No commit was made. The repo may still be initializing; retry the step.`,
             { cause: error },
@@ -263,7 +263,7 @@ function createIsomorphicGitWorkspaceFactory(): GitWorkspaceFactory {
         async commitAndPush(
           files: ReadonlyMap<string, Uint8Array>,
           message: string,
-        ): Promise<CommittedStep> {
+        ): Promise<CommittedRecord> {
           const parent = await readHead();
           try {
             for (const [path, bytes] of files) {
@@ -290,7 +290,7 @@ function createIsomorphicGitWorkspaceFactory(): GitWorkspaceFactory {
             };
           } catch (error) {
             throw new CapsuleError(
-              "BACKEND_WRITE_FAILED",
+              "SIDE_EFFECT_STORAGE_FAILED",
               `Committing/pushing capsule files to the Artifacts remote failed: ${safeErrorMessage(error)}. ` +
                 `Previously pushed commits are intact. This is usually transient (token expiry or a ` +
                 `concurrent push); the step can be retried safely.`,

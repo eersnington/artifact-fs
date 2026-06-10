@@ -1,66 +1,48 @@
 import { slugify } from "./validation.js";
-import type { StepIdentity } from "./types.js";
 
-/**
- * Canonical run-repo layout. Every adapter writes the same tree:
- *
- *   .capsule/run.json
- *   .capsule/index.json
- *   steps/<NNN>-<step-slug>/attempts/<n>/manifest.json
- *   steps/<NNN>-<step-slug>/attempts/<n>/failure.json        (failed attempts)
- *   steps/<NNN>-<step-slug>/attempts/<n>/input.hash.json
- *   steps/<NNN>-<step-slug>/attempts/<n>/output.json
- *   steps/<NNN>-<step-slug>/attempts/<n>/effects/<safe-kind>/record.json
- *   steps/<NNN>-<step-slug>/attempts/<n>/files/...
- */
+/** Canonical run-repo layout for external call history records. */
 
-export const RUN_JSON_PATH = ".capsule/run.json";
-export const RUN_INDEX_PATH = ".capsule/index.json";
+export const RUN_JSON_PATH = ".calls/run.json";
 export const DEFAULT_BRANCH = "main";
+export const INIT_COMMIT_MESSAGE = "capsules: init workflow run";
 
 const MAX_REPO_NAME_LENGTH = 100;
 
-export function stepDirName(stepCount: number, stepName: string): string {
-  return `${String(stepCount).padStart(3, "0")}-${slugify(stepName)}`;
+export function callDirPath(keyHash: string): string {
+  return `.calls/by-key/${keyHashToPathSegment(keyHash)}`;
 }
 
-export function attemptDirPath(stepDir: string, attempt: number): string {
-  return `steps/${stepDir}/attempts/${attempt}`;
+export function callRequestPath(callDir: string): string {
+  return `${callDir}/request.json`;
 }
 
-export function manifestPath(attemptDir: string): string {
-  return `${attemptDir}/manifest.json`;
+export function callStartedPath(callDir: string): string {
+  return `${callDir}/started.json`;
 }
 
-export function failurePath(attemptDir: string): string {
-  return `${attemptDir}/failure.json`;
+export function callCommittedPath(callDir: string): string {
+  return `${callDir}/committed.json`;
 }
 
-export function inputHashPath(attemptDir: string): string {
-  return `${attemptDir}/input.hash.json`;
+export function callSummaryPath(callDir: string): string {
+  return `${callDir}/summary.json`;
 }
 
-export function outputPath(attemptDir: string): string {
-  return `${attemptDir}/output.json`;
+export function callReconciledPath(callDir: string): string {
+  return `${callDir}/reconciled.json`;
 }
 
-export function effectDirPath(attemptDir: string, safeKind: string): string {
-  return `${attemptDir}/effects/${safeKind}`;
+export function callAttemptStartedPath(callDir: string, attempt: number): string {
+  return `${callDir}/attempts/${String(attempt).padStart(3, "0")}-started.json`;
 }
 
-export function effectRecordPath(effectDir: string): string {
-  return `${effectDir}/record.json`;
-}
-
-export function filesBasePath(attemptDir: string): string {
-  return `${attemptDir}/files`;
+export function callAttemptErrorPath(callDir: string, attempt: number): string {
+  return `${callDir}/attempts/${String(attempt).padStart(3, "0")}-error.json`;
 }
 
 /**
  * Deterministic run-repo name from run identity. Sanitized to the
- * `[a-zA-Z0-9_][a-zA-Z0-9-_]*` charset and bounded: when the combined name
- * would exceed the limit, both parts are truncated and an 8-char hash of the
- * full identity is appended so distinct runs can never collide.
+ * `[a-zA-Z0-9_][a-zA-Z0-9-_]*` charset and bounded.
  */
 export function runRepoName(
   workflowName: string,
@@ -80,19 +62,29 @@ export function runRepoName(
   return `capsule-${wf.slice(0, wfBudget)}-${id.slice(0, idBudget)}-${suffix}`;
 }
 
+export function commitMessageForStarted(callName: string, attempt: number): string {
+  return `capsules: ${callName} attempt ${attempt} started`;
+}
+
+export function commitMessageForCommitted(callName: string, attempt: number): string {
+  return `capsules: ${callName} attempt ${attempt} committed`;
+}
+
+export function commitMessageForReconciled(callName: string, attempt: number): string {
+  return `capsules: ${callName} attempt ${attempt} reconciled`;
+}
+
+export function commitMessageForError(callName: string, attempt: number): string {
+  return `capsules: ${callName} attempt ${attempt} error`;
+}
+
+function keyHashToPathSegment(keyHash: string): string {
+  return keyHash.startsWith("sha256:") ? keyHash.slice("sha256:".length) : slugify(keyHash);
+}
+
 function sanitizeRepoSegment(text: string): string {
   const sanitized = text
     .replace(/[^a-zA-Z0-9_-]+/g, "-")
     .replace(/^[-]+|[-]+$/g, "");
   return sanitized.length > 0 ? sanitized : "run";
 }
-
-export function commitMessageFor(step: StepIdentity): string {
-  return `capsule: ${step.capsuleName} step ${step.stepDir} attempt ${step.attempt}`;
-}
-
-export function failureCommitMessageFor(step: StepIdentity): string {
-  return `capsule: ${step.capsuleName} step ${step.stepDir} attempt ${step.attempt} failed`;
-}
-
-export const INIT_COMMIT_MESSAGE = "capsule: init workflow run";

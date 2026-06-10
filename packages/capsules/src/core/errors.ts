@@ -1,26 +1,19 @@
-import type { CapsuleFailure } from "./types.js";
-
 export type CapsuleErrorCode =
-  | "INVALID_CAPSULE_REQUEST"
-  | "CAPSULE_CONFLICT"
-  | "BACKEND_UNAVAILABLE"
-  | "BACKEND_WRITE_FAILED"
-  | "OPERATION_FAILED";
+  | "INVALID_EXTERNAL_CALL"
+  | "SIDE_EFFECT_CONFLICT"
+  | "SIDE_EFFECT_AMBIGUOUS"
+  | "SIDE_EFFECT_STORAGE_FAILED"
+  | "SIDE_EFFECT_RECONCILE_FAILED";
 
 const RETRYABLE: Record<CapsuleErrorCode, boolean> = {
-  INVALID_CAPSULE_REQUEST: false,
-  CAPSULE_CONFLICT: false,
-  BACKEND_UNAVAILABLE: true,
-  BACKEND_WRITE_FAILED: true,
-  OPERATION_FAILED: true,
+  INVALID_EXTERNAL_CALL: false,
+  SIDE_EFFECT_CONFLICT: false,
+  SIDE_EFFECT_AMBIGUOUS: false,
+  SIDE_EFFECT_STORAGE_FAILED: true,
+  SIDE_EFFECT_RECONCILE_FAILED: true,
 };
 
-/**
- * Tagged error for everything Capsule raises itself. `retryable` mirrors how
- * the failure should interact with `step.do()` retries: validation and
- * conflict errors will fail every attempt identically, so callers should
- * treat them as terminal (or convert them to `NonRetryableError`).
- */
+/** Tagged error for failures raised by Capsules itself. */
 export class CapsuleError extends Error {
   readonly code: CapsuleErrorCode;
   readonly retryable: boolean;
@@ -39,36 +32,31 @@ export class CapsuleError extends Error {
   }
 }
 
-export function invalidRequest(message: string): CapsuleError {
-  return new CapsuleError("INVALID_CAPSULE_REQUEST", message);
+export function invalidExternalCall(message: string): CapsuleError {
+  return new CapsuleError("INVALID_EXTERNAL_CALL", message);
 }
 
-/**
- * Convert any thrown value into a structured CapsuleFailure for failure
- * manifests. Errors named `NonRetryableError` (Cloudflare's terminal error)
- * and non-retryable CapsuleErrors are marked non-retryable.
- */
-export function toCapsuleFailure(error: unknown): CapsuleFailure {
-  if (error instanceof CapsuleError) {
-    return {
-      code: error.code,
-      message: error.message,
-      retryable: error.retryable,
-      cause: error.cause,
-    };
-  }
-  if (error instanceof Error) {
-    return {
-      code: "OPERATION_FAILED",
-      message: error.message,
-      retryable: error.name !== "NonRetryableError",
-      cause: error,
-    };
-  }
-  return {
-    code: "OPERATION_FAILED",
-    message: String(error),
-    retryable: true,
-    cause: error,
-  };
+export function sideEffectConflict(message: string): CapsuleError {
+  return new CapsuleError("SIDE_EFFECT_CONFLICT", message);
+}
+
+export function sideEffectAmbiguous(message: string): CapsuleError {
+  return new CapsuleError("SIDE_EFFECT_AMBIGUOUS", message);
+}
+
+export function storageFailed(
+  message: string,
+  cause?: unknown,
+  options?: { readonly retryable?: boolean },
+): CapsuleError {
+  return new CapsuleError("SIDE_EFFECT_STORAGE_FAILED", message, {
+    ...(cause !== undefined ? { cause } : {}),
+    ...(options?.retryable !== undefined ? { retryable: options.retryable } : {}),
+  });
+}
+
+export function reconcileFailed(message: string, cause?: unknown): CapsuleError {
+  return new CapsuleError("SIDE_EFFECT_RECONCILE_FAILED", message, {
+    ...(cause !== undefined ? { cause } : {}),
+  });
 }

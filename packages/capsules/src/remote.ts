@@ -6,11 +6,10 @@ export type RemoteOptions = RemoteHttpStoreOptions;
 
 /**
  * Create a generic remote HTTP adapter for a self-hosted writer or hosted
- * artifact service.
+ * call-history service.
  *
- * The remote protocol sends multipart binary file uploads with JSON metadata
- * and buffers file bodies before commit. It is intended for small/medium
- * inspectable artifact trees, not streaming blob uploads or huge directories.
+ * The remote protocol sends multipart JSON record uploads with metadata and is
+ * intended for compact side-effect records, not streaming blob uploads.
  */
 export function remote(options: RemoteOptions): RemoteAdapter {
   return {

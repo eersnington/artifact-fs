@@ -1,4 +1,4 @@
-import { invalidRequest } from "./errors.js";
+import { invalidExternalCall } from "./errors.js";
 import type { CapsuleName, CapsulePath } from "./types.js";
 
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]*$/;
@@ -10,13 +10,13 @@ const MAX_NAME_LENGTH = 100;
  */
 export function validateCapsuleName(name: string): CapsuleName {
   if (name.length === 0 || name.length > MAX_NAME_LENGTH) {
-    throw invalidRequest(
+    throw invalidExternalCall(
       `Capsule name must be 1-${MAX_NAME_LENGTH} characters; got ${name.length}. ` +
         `Use a short lowercase slug like "ai-response".`,
     );
   }
   if (!NAME_PATTERN.test(name)) {
-    throw invalidRequest(
+    throw invalidExternalCall(
       `Capsule name "${name}" is invalid. Use lowercase letters, digits, ".", "_", and "-", ` +
         `starting with a letter or digit.`,
     );
@@ -31,27 +31,27 @@ export function validateCapsuleName(name: string): CapsuleName {
  */
 export function validateCapsulePath(path: string): CapsulePath {
   if (path.length === 0) {
-    throw invalidRequest("File path must not be empty.");
+    throw invalidExternalCall("File path must not be empty.");
   }
   if (path.includes("\\")) {
-    throw invalidRequest(
+    throw invalidExternalCall(
       `File path "${path}" contains "\\". Use "/" as the separator.`,
     );
   }
   if (path.startsWith("/")) {
-    throw invalidRequest(
+    throw invalidExternalCall(
       `File path "${path}" is absolute. Paths are relative to the capsule's files/ directory.`,
     );
   }
   const segments = path.split("/");
   for (const segment of segments) {
     if (segment === "") {
-      throw invalidRequest(
+      throw invalidExternalCall(
         `File path "${path}" contains an empty segment (doubled or trailing "/").`,
       );
     }
     if (segment === "." || segment === "..") {
-      throw invalidRequest(
+      throw invalidExternalCall(
         `File path "${path}" contains "${segment}". Traversal segments are not allowed.`,
       );
     }
@@ -65,14 +65,14 @@ export function validateCapsulePath(path: string): CapsulePath {
  */
 export function safeEffectKind(kind: string): string {
   if (kind.length === 0) {
-    throw invalidRequest("Effect kind must not be empty.");
+    throw invalidExternalCall("Effect kind must not be empty.");
   }
   const safe = kind
     .replace(/[^a-zA-Z0-9]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .toLowerCase();
   if (safe.length === 0) {
-    throw invalidRequest(
+    throw invalidExternalCall(
       `Effect kind "${kind}" has no filesystem-safe characters. ` +
         `Use a dotted provider identifier like "stripe.invoice.create".`,
     );

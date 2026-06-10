@@ -1,15 +1,17 @@
 import { describe, expect, it } from "vitest";
-import { createCapsules } from "../src/index.js";
+import { createCapsules, defineExternalCall } from "../src/index.js";
 import { remote } from "../src/remote.js";
 
 describe("remote HTTP adapter", () => {
-  it("sends multipart metadata with raw file parts", async () => {
+  it("sends multipart metadata with raw call-history record parts", async () => {
     const requests: Array<{
       readonly method: string;
       readonly path: string;
       readonly authorization: string | null;
       readonly body: FormData | undefined;
     }> = [];
+    const files = new Map<string, Uint8Array>();
+    let head = "0".repeat(40);
     const fakeFetch: typeof fetch = async (input, init) => {
       const url = new URL(String(input));
       const body = init?.body instanceof FormData ? init.body : undefined;
@@ -21,16 +23,22 @@ describe("remote HTTP adapter", () => {
       });
 
       if (url.pathname === "/runs/open") {
-        return jsonResponse({ repo: "repo", branch: "main", head: "0".repeat(40) });
+        await storeParts(body, files);
+        return jsonResponse({ repo: "repo", branch: "main", head });
       }
       if (url.pathname.endsWith("/head")) {
-        return jsonResponse({ head: "0".repeat(40) });
+        return jsonResponse({ head });
       }
       if (url.pathname.endsWith("/file")) {
-        return new Response(null, { status: 404 });
+        const path = url.searchParams.get("path") ?? "";
+        const bytes = files.get(path);
+        return bytes === undefined ? new Response(null, { status: 404 }) : new Response(bytes);
       }
       if (url.pathname.endsWith("/commit")) {
-        return jsonResponse({ commit: "1".repeat(40), parent: "0".repeat(40) });
+        await storeParts(body, files);
+        const parent = head;
+        head = head === "0".repeat(40) ? "1".repeat(40) : "2".repeat(40);
+        return jsonResponse({ commit: head, parent });
       }
       return new Response("unexpected route", { status: 500 });
     };
@@ -41,50 +49,42 @@ describe("remote HTTP adapter", () => {
         fetch: fakeFetch,
       }),
     });
-
-    const refs = await capsules.capture({
-      workflow: { workflowName: "BinaryWorkflow", instanceId: "binary-1" },
-      step: { step: { name: "capture binary", count: 1 }, attempt: 1 },
-      name: "binary-capsule",
-      input: { id: "raw" },
-      run: async ({ files }) => {
-        await files.write("binary/raw.bin", new Uint8Array([0, 255, 1, 2]), {
-          exposeAs: "raw",
-        });
-        return { ok: true };
-      },
+    const call = defineExternalCall<{ amount: number }, { id: string }>({
+      name: "stripe.payment_intent.create",
+      recovery: "idempotent-call",
+      execute: async () => ({ id: "pi_123" }),
     });
 
+    const result = await capsules.call(call, {
+      workflow: { workflowName: "BinaryWorkflow", instanceId: "binary-1" },
+      step: { step: { name: "charge customer", count: 1 }, attempt: 1 },
+      key: "wf:binary-1:charge-customer",
+      request: { amount: 1200 },
+    });
+
+    expect(result).toEqual({ id: "pi_123" });
     const openRequest = requests.find((request) => request.path === "/runs/open");
     expect(openRequest?.authorization).toBe("Bearer secret-token");
     const openMetadata = await readMetadata(openRequest?.body);
     expect(openMetadata).toMatchObject({
       protocolVersion: 1,
       branch: "main",
-      message: "capsule: init workflow run",
+      message: "capsules: init workflow run",
     });
-    expect(openMetadata.files).toEqual([
-      { path: ".capsule/run.json", part: "file-0" },
-    ]);
-    await expect(readPart(openRequest?.body, "file-0")).resolves.toContain(
-      "BinaryWorkflow",
-    );
+    expect(openMetadata.files).toEqual([{ path: ".calls/run.json", part: "file-0" }]);
 
-    const commitRequest = requests.find((request) => request.path.endsWith("/commit"));
-    expect(commitRequest?.authorization).toBe("Bearer secret-token");
-    const commitMetadata = await readMetadata(commitRequest?.body);
-    expect(commitMetadata).toMatchObject({
-      protocolVersion: 1,
-      message: "capsule: binary-capsule step 001-capture-binary attempt 1",
-    });
-    expect(JSON.stringify(commitMetadata)).not.toContain("AP8BAg");
-    const rawEntry = commitMetadata.files.find(
-      (entry: { path: string }) => entry.path === refs.files.raw!.path,
+    const commitRequests = requests.filter((request) => request.path.endsWith("/commit"));
+    expect(commitRequests).toHaveLength(2);
+    const startedMetadata = await readMetadata(commitRequests[0]?.body);
+    expect(startedMetadata.message).toContain("attempt 1 started");
+    expect(JSON.stringify(startedMetadata)).not.toContain("pi_123");
+    const committedMetadata = await readMetadata(commitRequests[1]?.body);
+    expect(committedMetadata.message).toContain("attempt 1 committed");
+    const committedEntry = committedMetadata.files.find(
+      (entry: { path: string }) => entry.path.endsWith("/committed.json"),
     );
-    expect(rawEntry).toBeDefined();
-    await expect(readPartBytes(commitRequest?.body, rawEntry!.part)).resolves.toEqual(
-      new Uint8Array([0, 255, 1, 2]),
-    );
+    expect(committedEntry).toBeDefined();
+    await expect(readPart(commitRequests[1]?.body, committedEntry!.part)).resolves.toContain("pi_123");
   });
 });
 
@@ -92,6 +92,16 @@ function jsonResponse(body: unknown): Response {
   return new Response(JSON.stringify(body), {
     headers: { "content-type": "application/json" },
   });
+}
+
+async function storeParts(
+  body: FormData | undefined,
+  files: Map<string, Uint8Array>,
+): Promise<void> {
+  const metadata = await readMetadata(body);
+  for (const entry of metadata.files) {
+    files.set(entry.path, await readPartBytes(body, entry.part));
+  }
 }
 
 async function readMetadata(body: FormData | undefined): Promise<{

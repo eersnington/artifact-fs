@@ -1,5 +1,5 @@
 import { CapsuleError } from "../core/errors.js";
-import type { CommittedStep } from "../core/types.js";
+import type { CommittedRecord } from "../core/types.js";
 import {
   SerialCommitQueue,
   type RepositorySession,
@@ -7,7 +7,7 @@ import {
 } from "./backend.js";
 
 /**
- * Local Node artifact store: run repos are plain Git working trees under a
+ * Local Node call-history store: run repos are plain Git working trees under a
  * root directory, committed with the native `git` binary. This is used by the
  * local adapter for Node scripts, tests, and CLIs.
  *
@@ -19,7 +19,7 @@ import {
  * runtime-neutral for Workers bundlers.
  */
 export type LocalNodeOptions = {
-  /** Directory that holds one Git repo per Workflow run. */
+  /** Directory that holds one call-history Git repo per Workflow run. */
   readonly mountRoot: string;
   /** Commit author. Defaults to workflow-capsules. */
   readonly author?: { readonly name: string; readonly email: string };
@@ -87,7 +87,7 @@ export function localRepositoryStore(options: LocalNodeOptions): RepositoryStore
             ? String((error as { stderr: unknown }).stderr).trim()
             : "";
         throw new CapsuleError(
-          "BACKEND_WRITE_FAILED",
+          "SIDE_EFFECT_STORAGE_FAILED",
           `git ${args[0]} failed in ${repositoryDir}: ${stderr || String(error)}. ` +
             `Committed history is intact; fix the repository state and retry the step.`,
           { cause: error },
@@ -142,8 +142,8 @@ export function localRepositoryStore(options: LocalNodeOptions): RepositoryStore
           return new Uint8Array(data);
         } catch (cause) {
           if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
-          throw new CapsuleError(
-            "BACKEND_WRITE_FAILED",
+            throw new CapsuleError(
+              "SIDE_EFFECT_STORAGE_FAILED",
             `Could not read ${repoPath} from local capsule repo ${repositoryDir}: ${String(cause)}. ` +
               `Committed history is intact; check local filesystem permissions and retry.`,
             { cause },
@@ -151,7 +151,7 @@ export function localRepositoryStore(options: LocalNodeOptions): RepositoryStore
         }
       },
 
-      commitFiles(input): Promise<CommittedStep> {
+      commitFiles(input): Promise<CommittedRecord> {
         return commitQueue.run(async () => {
           const parent = await readHeadCommit();
           await writeWorkingTreeFiles(input.files);
@@ -163,28 +163,6 @@ export function localRepositoryStore(options: LocalNodeOptions): RepositoryStore
             ...(parent !== undefined ? { parent } : {}),
           };
         });
-      },
-
-      async findCommitForPath(repoPath: string): Promise<CommittedStep | undefined> {
-        try {
-          const logOutput = await runGit(
-            "log",
-            "-n",
-            "1",
-            "--format=%H %P",
-            "--",
-            repoPath,
-          );
-          if (logOutput === "") return undefined;
-          const [commit, parent] = logOutput.split(/\s+/);
-          if (commit === undefined) return undefined;
-          return {
-            commit,
-            ...(parent !== undefined && parent !== "" ? { parent } : {}),
-          };
-        } catch {
-          return undefined;
-        }
       },
     };
   }

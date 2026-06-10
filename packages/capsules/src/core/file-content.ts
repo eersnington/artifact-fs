@@ -1,4 +1,4 @@
-import { invalidRequest } from "./errors.js";
+import { invalidExternalCall } from "./errors.js";
 import type { CapsuleFileBody } from "./types.js";
 
 const encoder = new TextEncoder();
@@ -30,8 +30,8 @@ export async function readCapsuleFileBody(
     return withInferredMediaType(path, await readStreamBody(body));
   }
   if (body === undefined || typeof body === "function") {
-    throw invalidRequest(
-      `files.write("${path}") received a body that cannot be serialized. ` +
+    throw invalidExternalCall(
+      `Call-history record "${path}" received a body that cannot be serialized. ` +
         `Pass a JSON-like object, string, Uint8Array, ArrayBuffer, Blob, or ReadableStream.`,
     );
   }
