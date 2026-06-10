@@ -2,8 +2,22 @@
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "artifact-fs-workflow-capsule-mvp",
   "main": "src/index.ts",
-  "compatibility_date": "2026-06-06",
+  "compatibility_date": "2026-06-10",
+  "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true
   },
+  "workflows": [
+    {
+      "name": "charge-customer-workflow",
+      "binding": "CHARGE_CUSTOMER_WORKFLOW",
+      "class_name": "ChargeCustomerWorkflow"
+    }
+  ],
+  "artifacts": [
+    {
+      "binding": "ARTIFACTS",
+      "namespace": "default"
+    }
+  ]
 }
