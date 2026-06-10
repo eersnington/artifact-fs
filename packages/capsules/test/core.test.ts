@@ -72,7 +72,7 @@ function internalAdapter(adapter: CapsuleAdapter): InternalCapsuleAdapter {
   return adapter as InternalCapsuleAdapter;
 }
 
-describe("Capsules.capture with memory artifacts", () => {
+describe("createCapsules with memory adapter", () => {
   it("writes file refs, output, manifests, and effect audit records", async () => {
     const adapter = memory();
     const capsules = createCapsules({ adapter });

@@ -10,7 +10,7 @@ Capsule does not wrap or replace `step.do()`. Workflows stays the durable execut
 Workflow step.do(...)
   -> capsules.capture(...)
   -> user code produces files
-  -> backend commits the tree to a Git run repo
+  -> adapter commits the tree to a Git run repo
   -> Workflow state stores refs only
 ```
 
@@ -101,18 +101,6 @@ createCapsules({ adapter: local({ root: "/tmp/capsules" }) });
 createCapsules({ adapter: remote({ url: "http://127.0.0.1:8789", token }) });
 ```
 
-For the local bridge, run a Node service backed by the same protocol:
-
-```ts
-import { createServer } from "node:http";
-import { createLocalBridgeHandler } from "workflow-capsules";
-
-const handle = createLocalBridgeHandler({ mountRoot: "/tmp/capsules" });
-// Adapt Node req/res to Fetch Request/Response, or use any Fetch-native server.
-```
-
-The bridge writes plain Git repos under `mountRoot`; inspect them with `git log`, `git diff`, or mount them with ArtifactFS.
-
 ## Core API
 
 ### `capsules.capture(options, run)`
@@ -148,23 +136,6 @@ Writes a side-effect record for an external call that **already happened** — i
 Capsule adds workflow, instance id, step, attempt, timestamps, input hash, and idempotency key automatically. You can provide concrete provider facts such as `externalId`, `httpStatus`, `metadata`, and optional `request`/`response` snapshots. Capsule writes those snapshots under the effect directory and records their size and digest automatically.
 
 Capsule stores exactly what you pass to `effects.record()` and `files.write()`. Artifact repos are access-controlled, but they are durable Git history. Shape, omit, or transform sensitive fields before recording or writing them.
-
-### `Capsules.define<Input, Output>(definition)`
-
-Reusable typed operations shared by multiple Workflows:
-
-```ts
-const buildArtifacts = Capsules.define<BuildInput, BuildOutput>({
-  name: "build-artifacts",
-  run: async ({ input, files }) => { /* ... */ },
-});
-
-await step.do("capture build artifacts", (ctx) =>
-  capsules.capture(buildArtifacts.with({ workflow: event, step: ctx, input })),
-);
-```
-
-`define()` also accepts an optional Standard Schema-compatible `input` schema for runtime validation.
 
 ### Automatic Metadata
 

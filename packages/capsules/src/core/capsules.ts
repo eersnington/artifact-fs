@@ -51,7 +51,6 @@ import {
 } from "../git/layout.js";
 import { buildEffectRecord, effectDirectoryPath } from "../observability/effects.js";
 import { appendIndexEntry, readRunIndex } from "../observability/run-index.js";
-import { define } from "./define.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -72,10 +71,6 @@ export type CreateCapsulesOptions = {
 export function createCapsules(options: CreateCapsulesOptions): CapsulesService {
   return new CapsulesImpl(options.adapter, optionalLimits(options));
 }
-
-export const Capsules = {
-  define,
-};
 
 class CapsulesImpl implements CapsulesService {
   private readonly adapter: InternalCapsuleAdapter;
@@ -195,7 +190,6 @@ class CapsulesImpl implements CapsulesService {
         attempt: step.attempt,
       },
       artifact: {
-        backend: this.adapter.kind,
         adapter: this.adapter.kind,
         repo: session.repo,
         branch: session.branch,
@@ -657,7 +651,7 @@ async function validateInput<Input>(
 }
 
 function refsFromResolved<Output>(
-  backendKind: string,
+  adapterKind: string,
   session: ArtifactRunSession,
   resolved: { manifest: StepManifest; commit: string; parent?: string },
 ): CapsuleRefs<Output> {
@@ -681,8 +675,7 @@ function refsFromResolved<Output>(
       attempt: resolved.manifest.step.attempt,
     },
     artifact: {
-      adapter: backendKind,
-      backend: backendKind,
+      adapter: adapterKind,
       repo: session.repo,
       branch: session.branch,
       commit: resolved.commit,

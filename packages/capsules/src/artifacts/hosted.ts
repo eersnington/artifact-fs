@@ -24,10 +24,7 @@ export type HttpStoreOptions = {
   readonly fetch?: typeof fetch;
 };
 
-export function httpStore(
-  kind: "hosted" | "local-bridge" | "remote",
-  options: HttpStoreOptions,
-): TreeStore {
+export function httpStore(options: HttpStoreOptions): TreeStore {
   const base = options.url.replace(/\/+$/, "");
   const doFetch = options.fetch ?? fetch;
 
@@ -51,11 +48,9 @@ export function httpStore(
     } catch (error) {
       throw new CapsuleError(
         "BACKEND_UNAVAILABLE",
-        `Could not reach the ${kind} artifact service at ${base} (${method} ${path}): ` +
+        `Could not reach the remote artifact service at ${base} (${method} ${path}): ` +
           `${error instanceof Error ? error.message : String(error)}. No commit was made. ` +
-          (kind === "local-bridge"
-            ? "Check that the local bridge process is running."
-            : "Check the service URL and network access."),
+          "Check the service URL and network access.",
         { cause: error },
       );
     }
@@ -67,14 +62,14 @@ export function httpStore(
     const text = await response.text().catch(() => "");
     throw new CapsuleError(
       response.status >= 500 ? "BACKEND_UNAVAILABLE" : "BACKEND_WRITE_FAILED",
-      `${kind} artifact service rejected ${what} with HTTP ${response.status}` +
+      `Remote artifact service rejected ${what} with HTTP ${response.status}` +
         (text !== "" ? `: ${text.slice(0, 500)}` : ".") +
         " Committed history on the service is intact.",
     );
   };
 
   return {
-    kind,
+    kind: "remote",
 
     async openRepo(name, init) {
       const response = await request("POST", "/runs/open", {

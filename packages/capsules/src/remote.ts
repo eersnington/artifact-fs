@@ -5,8 +5,8 @@ import type { InternalCapsuleAdapter, RemoteAdapter } from "./core/types.js";
 export type RemoteOptions = HttpStoreOptions;
 
 /**
- * Create a generic remote HTTP adapter for a local bridge, self-hosted writer,
- * or hosted artifact service.
+ * Create a generic remote HTTP adapter for a self-hosted writer or hosted
+ * artifact service.
  *
  * The remote protocol sends base64 file maps over JSON and buffers file bodies
  * before commit. It is intended for small/medium inspectable artifact trees,
@@ -15,6 +15,6 @@ export type RemoteOptions = HttpStoreOptions;
 export function remote(options: RemoteOptions): RemoteAdapter {
   return {
     kind: "remote",
-    backend: createTreeBackend(httpStore("remote", options)),
+    backend: createTreeBackend(httpStore(options)),
   } as InternalCapsuleAdapter as RemoteAdapter;
 }

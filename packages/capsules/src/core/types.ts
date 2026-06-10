@@ -151,12 +151,6 @@ export type CapsuleDedupe = {
   readonly key: string;
 };
 
-export type CapsuleDefinition<Input, Output> = {
-  readonly name: string;
-  readonly input?: StandardSchemaV1<unknown, Input>;
-  run(ctx: CapsuleRunContext<Input>): Promise<Output>;
-};
-
 export type CapsuleSpec<Input, Output> = {
   readonly workflow: WorkflowEventLike;
   readonly step: WorkflowStepContextLike;
@@ -171,13 +165,6 @@ export type CapsuleSpec<Input, Output> = {
 };
 
 export type CaptureOptions<Input> = Omit<CapsuleSpec<Input, unknown>, "run">;
-
-export type DefinedCapsule<Input, Output> = {
-  readonly name: string;
-  with(
-    args: Omit<CapsuleSpec<Input, Output>, "name" | "run" | "inputSchema">,
-  ): CapsuleSpec<Input, Output>;
-};
 
 export type CapsuleRefs<Output = unknown> = {
   readonly capsule: {
@@ -197,7 +184,6 @@ export type CapsuleRefs<Output = unknown> = {
   };
   readonly artifact: {
     readonly adapter: string;
-    readonly backend?: string;
     readonly repo: string;
     readonly branch: string;
     readonly commit: string;
@@ -324,7 +310,7 @@ export type RunIndex = {
 };
 
 // ---------------------------------------------------------------------------
-// Internal artifact backend contract (one canonical contract for all layers).
+// Internal artifact backend contract used by all adapters.
 // ---------------------------------------------------------------------------
 
 export type StepIdentity = {

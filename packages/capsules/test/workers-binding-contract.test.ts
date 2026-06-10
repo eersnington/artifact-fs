@@ -1,9 +1,8 @@
 import { describe, expect, it } from "vitest";
 import {
   createCapsules,
-  type ArtifactsBindingLike,
 } from "../src/index.js";
-import { cloudflare } from "../src/cloudflare.js";
+import { cloudflare, type ArtifactsBindingLike } from "../src/cloudflare.js";
 import type { GitOps, GitWorkspace } from "../src/artifacts/workers.js";
 
 const encoder = new TextEncoder();

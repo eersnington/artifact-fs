@@ -1,10 +1,9 @@
-export { Capsules, createCapsules, type CreateCapsulesOptions } from "./core/capsules.js";
+export { createCapsules, type CreateCapsulesOptions } from "./core/capsules.js";
 export { CapsuleError, type CapsuleErrorCode } from "./core/errors.js";
 
 export type {
   CapsuleAdapter,
   CapsuleDedupe,
-  CapsuleDefinition,
   CapsuleEffectRecordInput,
   CapsuleEffectRef,
   CapsuleEffectSnapshot,
@@ -20,8 +19,6 @@ export type {
   CaptureOptions,
   CapsuleSpec,
   CapsulesService,
-  DefinedCapsule,
-  InternalCapsuleAdapter,
   InspectedRun,
   StandardSchemaV1,
   CloudflareAdapter,
@@ -31,12 +28,3 @@ export type {
   WorkflowEventLike,
   WorkflowStepContextLike,
 } from "./core/types.js";
-
-export type {
-  ArtifactsBindingLike,
-  ArtifactsCreatedRepoLike,
-  ArtifactsRepoHandleLike,
-  WorkersStoreOptions,
-} from "./artifacts/workers.js";
-export type { LocalNodeOptions } from "./artifacts/local-node.js";
-export { createLocalBridgeHandler } from "./artifacts/bridge-server.js";
