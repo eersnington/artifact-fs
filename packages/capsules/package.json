@@ -1,0 +1,42 @@
+{
+  "name": "workflow-capsules",
+  "version": "0.1.0",
+  "description": "Durable, versioned artifact capture for Cloudflare Workflows steps. Store file-tree side effects as Git commits in Cloudflare Artifacts and keep Workflow state small.",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@10.24.0",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsc -p tsconfig.build.json",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "keywords": [
+    "cloudflare",
+    "workflows",
+    "artifacts",
+    "git",
+    "durable",
+    "side-effects"
+  ],
+  "dependencies": {
+    "isomorphic-git": "^1.27.1"
+  },
+  "devDependencies": {
+    "@types/node": "^24.10.1",
+    "typescript": "^6.0.3",
+    "vitest": "^3.2.4"
+  }
+}
