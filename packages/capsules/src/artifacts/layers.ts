@@ -29,10 +29,9 @@ export const Artifacts = {
 
   /**
    * Cloudflare Artifacts via the Workers binding (`env.ARTIFACTS`). Repo and
-   * token management use the binding; file writes use isomorphic-git with an
-   * in-memory filesystem, which requires the `nodejs_compat` compatibility
-   * flag and buffers the working tree in Worker memory (MVP caveat for very
-   * large trees).
+   * token management use the binding directly. Because the binding does not
+   * read or write repo files, the Worker-side commit path uses isomorphic-git
+   * with an in-memory filesystem to push Git commits to the returned remote.
    */
   workers(
     binding: ArtifactsBindingLike,

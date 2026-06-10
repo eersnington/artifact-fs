@@ -56,9 +56,10 @@ export type WorkersStoreOptions = {
 };
 
 /**
- * Git engine seam. The default implementation uses isomorphic-git with an
- * in-memory filesystem (requires `nodejs_compat`); contract tests inject a
- * fake so they run without the network.
+ * Git engine seam. The Artifacts binding manages repos and tokens; this Git
+ * writer handles file trees, commits, and pushes because the binding does not
+ * expose direct file-write or commit methods. Contract tests inject a fake so
+ * they run without the network.
  */
 export type GitOps = {
   open(input: {

@@ -21,8 +21,6 @@ npm i workflow-capsules
 # or: pnpm add workflow-capsules
 ```
 
-The Workers binding layer uses `isomorphic-git` with an in-memory filesystem, which requires the `nodejs_compat` compatibility flag in your Wrangler config.
-
 ## Quick Start
 
 ```ts
@@ -92,7 +90,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<Env, ChargePayloa
 Pick the backend once; Workflow step bodies never change across layers.
 
 ```ts
-Capsules.layer(Artifacts.workers(env.ARTIFACTS));                                    // Cloudflare Artifacts binding
+Capsules.layer(Artifacts.workers(env.ARTIFACTS));                                    // Workers binding + Git push
 Capsules.layer(Artifacts.memory());                                                  // tests and examples
 Capsules.layer(Artifacts.localNode({ mountRoot: "/tmp/capsules" }));                 // Node + native git
 Capsules.layer(Artifacts.localBridge({ url: "http://127.0.0.1:8789" }));             // wrangler dev -> local bridge
@@ -211,7 +209,7 @@ JavaScript Workflows can return a `ReadableStream<Uint8Array>` from `step.do()` 
 
 ## MVP Caveats
 
-- The Workers binding layer buffers the working tree in Worker memory via `isomorphic-git`; fine for small-to-medium artifacts, not for huge dumps. Use the local bridge or hosted layer for large trees.
+- `Artifacts.workers(...)` buffers a short-lived working tree in Worker memory via `isomorphic-git`; fine for small-to-medium artifacts, not for huge dumps. Use the local bridge or hosted layer for large trees or native-git-backed writes.
 - `dedupe.mode: "reuse-output"` is reserved; `"record-reuse"` records the dedupe key in manifests today.
 - Stream bodies passed to `files.write()` are buffered before commit; the hosted protocol is the path to true streaming writes.
 

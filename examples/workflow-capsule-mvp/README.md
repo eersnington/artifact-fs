@@ -31,11 +31,10 @@ Each capsule-producing step creates a Git commit in the run repo, so you can ins
 
 ## Configure Cloudflare
 
-`wrangler.jsonc` enables the Workflow, Artifacts binding, and `nodejs_compat` because the MVP Workers layer uses `isomorphic-git` with an in-memory filesystem:
+`wrangler.jsonc` enables the Workflow and Artifacts binding. `Artifacts.workers(...)` uses the binding for repo/token operations and `isomorphic-git` for the Git content-write path because the binding does not read or write repo files directly:
 
 ```jsonc
 {
-  "compatibility_flags": ["nodejs_compat"],
   "workflows": [
     {
       "name": "charge-customer-workflow",
@@ -110,4 +109,4 @@ Capsules.layer(Artifacts.hosted({ url: "https://artifact-service.example.com", t
 
 ## MVP Caveat
 
-The Workers binding layer uses `isomorphic-git` and buffers the working tree in Worker memory. That is fine for small-to-medium artifacts and API validation. Very large trees should use the local bridge or hosted layer once their streaming upload path is implemented.
+`Artifacts.workers(...)` uses `isomorphic-git` and buffers a short-lived working tree in Worker memory. That is fine for small-to-medium artifacts and API validation. Very large trees should use the local bridge or hosted layer once their streaming upload path is implemented.
