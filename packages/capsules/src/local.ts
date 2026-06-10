@@ -1,5 +1,5 @@
-import { createRepositoryBackend } from "./artifacts/tree-backend.js";
-import { localRepositoryStore } from "./artifacts/local-node.js";
+import { createRepositoryBackend } from "./repositories/backend.js";
+import { localRepositoryStore } from "./repositories/local-node.js";
 import type { InternalCapsuleAdapter, LocalAdapter } from "./core/types.js";
 
 export type LocalOptions = {

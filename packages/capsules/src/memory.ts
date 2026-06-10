@@ -1,5 +1,5 @@
-import { createRepositoryBackend } from "./artifacts/tree-backend.js";
-import { memoryRepositoryStore } from "./artifacts/memory.js";
+import { createRepositoryBackend } from "./repositories/backend.js";
+import { memoryRepositoryStore } from "./repositories/memory.js";
 import type { InternalCapsuleAdapter, MemoryAdapter } from "./core/types.js";
 
 /**

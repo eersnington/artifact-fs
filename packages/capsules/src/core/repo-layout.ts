@@ -1,5 +1,5 @@
-import { slugify } from "../core/validation.js";
-import type { StepIdentity } from "../core/types.js";
+import { slugify } from "./validation.js";
+import type { StepIdentity } from "./types.js";
 
 /**
  * Canonical run-repo layout. Every adapter writes the same tree:

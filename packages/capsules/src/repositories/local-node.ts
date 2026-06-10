@@ -4,7 +4,7 @@ import {
   SerialCommitQueue,
   type RepositorySession,
   type RepositoryStore,
-} from "./tree-backend.js";
+} from "./backend.js";
 
 /**
  * Local Node artifact store: run repos are plain Git working trees under a

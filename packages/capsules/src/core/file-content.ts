@@ -1,32 +1,33 @@
-import { invalidRequest } from "../core/errors.js";
-import type { CapsuleFileBody } from "../core/types.js";
+import { invalidRequest } from "./errors.js";
+import type { CapsuleFileBody } from "./types.js";
 
 const encoder = new TextEncoder();
 
-/**
- * Convert a `files.write()` body into bytes plus an inferred media type.
- *
- * Stream bodies are read into memory before committing.
- */
-export async function bodyToBytes(
+export type CapsuleFileContent = {
+  readonly bytes: Uint8Array;
+  readonly mediaType?: string;
+};
+
+export async function readCapsuleFileBody(
   path: string,
   body: CapsuleFileBody,
-): Promise<{ bytes: Uint8Array; mediaType?: string }> {
+): Promise<CapsuleFileContent> {
   if (typeof body === "string") {
-    return { bytes: encoder.encode(body), ...inferred(path) };
+    return withInferredMediaType(path, encoder.encode(body));
   }
   if (body instanceof Uint8Array) {
-    return { bytes: body, ...inferred(path) };
+    return withInferredMediaType(path, body);
   }
   if (body instanceof ArrayBuffer) {
-    return { bytes: new Uint8Array(body), ...inferred(path) };
+    return withInferredMediaType(path, new Uint8Array(body));
   }
   if (typeof Blob !== "undefined" && body instanceof Blob) {
-    const mediaType = body.type !== "" ? { mediaType: body.type } : inferred(path);
-    return { bytes: new Uint8Array(await body.arrayBuffer()), ...mediaType };
+    const bytes = new Uint8Array(await body.arrayBuffer());
+    if (body.type !== "") return { bytes, mediaType: body.type };
+    return withInferredMediaType(path, bytes);
   }
   if (typeof ReadableStream !== "undefined" && body instanceof ReadableStream) {
-    return { bytes: await readAll(body), ...inferred(path) };
+    return withInferredMediaType(path, await readStreamBody(body));
   }
   if (body === undefined || typeof body === "function") {
     throw invalidRequest(
@@ -34,30 +35,38 @@ export async function bodyToBytes(
         `Pass a JSON-like object, string, Uint8Array, ArrayBuffer, Blob, or ReadableStream.`,
     );
   }
-  // JSON-like value (object, array, number, boolean, null).
   return {
     bytes: encoder.encode(JSON.stringify(body, null, 2) + "\n"),
     mediaType: "application/json",
   };
 }
 
-async function readAll(stream: ReadableStream<Uint8Array>): Promise<Uint8Array> {
+function withInferredMediaType(path: string, bytes: Uint8Array): CapsuleFileContent {
+  const mediaType = inferMediaType(path);
+  return mediaType === undefined ? { bytes } : { bytes, mediaType };
+}
+
+async function readStreamBody(
+  stream: ReadableStream<Uint8Array>,
+): Promise<Uint8Array> {
   const reader = stream.getReader();
   const chunks: Uint8Array[] = [];
-  let total = 0;
+  let totalBytes = 0;
+
   for (;;) {
     const { done, value } = await reader.read();
     if (done) break;
     chunks.push(value);
-    total += value.byteLength;
+    totalBytes += value.byteLength;
   }
-  const out = new Uint8Array(total);
+
+  const bytes = new Uint8Array(totalBytes);
   let offset = 0;
   for (const chunk of chunks) {
-    out.set(chunk, offset);
+    bytes.set(chunk, offset);
     offset += chunk.byteLength;
   }
-  return out;
+  return bytes;
 }
 
 const MEDIA_TYPES: Record<string, string> = {
@@ -80,10 +89,8 @@ const MEDIA_TYPES: Record<string, string> = {
   wasm: "application/wasm",
 };
 
-function inferred(path: string): { mediaType?: string } {
+function inferMediaType(path: string): string | undefined {
   const dot = path.lastIndexOf(".");
-  if (dot === -1) return {};
-  const ext = path.slice(dot + 1).toLowerCase();
-  const mediaType = MEDIA_TYPES[ext];
-  return mediaType !== undefined ? { mediaType } : {};
+  if (dot === -1) return undefined;
+  return MEDIA_TYPES[path.slice(dot + 1).toLowerCase()];
 }

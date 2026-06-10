@@ -1,11 +1,11 @@
 import { CapsuleError, invalidRequest } from "../core/errors.js";
 import type { CommittedStep } from "../core/types.js";
-import { MemoryFS } from "../git/memory-fs.js";
+import { MemoryFS } from "./isomorphic-git-memory-fs.js";
 import {
   SerialCommitQueue,
   type RepositorySession,
   type RepositoryStore,
-} from "./tree-backend.js";
+} from "./backend.js";
 
 /**
  * Structural types for the Cloudflare Artifacts Workers binding

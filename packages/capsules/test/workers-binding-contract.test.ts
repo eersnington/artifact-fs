@@ -6,7 +6,7 @@ import { cloudflare, type ArtifactsBindingLike } from "../src/cloudflare.js";
 import type {
   GitWorkspaceFactory,
   PushableGitWorkspace,
-} from "../src/artifacts/workers.js";
+} from "../src/repositories/cloudflare-artifacts.js";
 
 const encoder = new TextEncoder();
 

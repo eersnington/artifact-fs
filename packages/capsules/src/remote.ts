@@ -1,5 +1,5 @@
-import { remoteHttpStore, type RemoteHttpStoreOptions } from "./artifacts/remote-http.js";
-import { createRepositoryBackend } from "./artifacts/tree-backend.js";
+import { remoteHttpStore, type RemoteHttpStoreOptions } from "./repositories/remote-http.js";
+import { createRepositoryBackend } from "./repositories/backend.js";
 import type { InternalCapsuleAdapter, RemoteAdapter } from "./core/types.js";
 
 export type RemoteOptions = RemoteHttpStoreOptions;

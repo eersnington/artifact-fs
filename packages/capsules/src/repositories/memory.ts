@@ -1,10 +1,10 @@
 import type { CommittedStep } from "../core/types.js";
-import { sha256Hex, digestBytes } from "../internal/hash.js";
+import { digestFileContent, sha256Hex } from "../core/content-digest.js";
 import {
   SerialCommitQueue,
   type RepositorySession,
   type RepositoryStore,
-} from "./tree-backend.js";
+} from "./backend.js";
 
 /**
  * In-memory artifact store for tests, examples, and deterministic unit runs.
@@ -108,7 +108,7 @@ async function commitMemoryFiles(
   for (const [path, bytes] of [...files].sort(([a], [b]) =>
     a.localeCompare(b),
   )) {
-    digests.push([path, await digestBytes(bytes)]);
+    digests.push([path, await digestFileContent(bytes)]);
   }
   const sha = (
     await sha256Hex(

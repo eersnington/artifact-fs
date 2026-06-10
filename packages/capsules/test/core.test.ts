@@ -7,9 +7,9 @@ import {
   type WorkflowStepContextLike,
 } from "../src/index.js";
 import { memory } from "../src/memory.js";
-import { DEFAULT_BRANCH } from "../src/git/layout.js";
+import { DEFAULT_BRANCH } from "../src/core/repo-layout.js";
 import type { InternalCapsuleAdapter, StandardSchemaV1 } from "../src/core/types.js";
-import { stableHash } from "../src/internal/hash.js";
+import { hashCapsuleInput } from "../src/core/content-digest.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -242,7 +242,7 @@ describe("createCapsules with memory adapter", () => {
       run: async ({ input }) => ({ amount: input.amount }),
     });
 
-    expect(refs.capsule.inputHash).toBe(await stableHash({ amount: 1200 }));
+    expect(refs.capsule.inputHash).toBe(await hashCapsuleInput({ amount: 1200 }));
     expect(refs.output.amount).toBe(1200);
   });
 

@@ -3,9 +3,9 @@ import type {
   CapsuleEffectRecordInput,
   EffectRecord,
   StepIdentity,
-} from "../core/types.js";
-import { safeEffectKind } from "../core/validation.js";
-import { effectDirPath } from "../git/layout.js";
+} from "./types.js";
+import { safeEffectKind } from "./validation.js";
+import { effectDirPath } from "./repo-layout.js";
 
 /**
  * Compute the repo-absolute effect directory for the nth occurrence of an

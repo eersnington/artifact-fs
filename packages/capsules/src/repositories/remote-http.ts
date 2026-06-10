@@ -1,6 +1,6 @@
 import { CapsuleError } from "../core/errors.js";
 import type { CommittedStep } from "../core/types.js";
-import type { RepositorySession, RepositoryStore } from "./tree-backend.js";
+import type { RepositorySession, RepositoryStore } from "./backend.js";
 
 /**
  * HTTP artifact store shared by remote HTTP-backed adapters. The service owns

@@ -2,26 +2,16 @@ import { CapsuleError, invalidRequest, toCapsuleFailure } from "./errors.js";
 import {
   slugify,
   validateCapsuleName,
-  validateCapsulePath,
 } from "./validation.js";
 import type {
   CapsuleAdapter,
   ArtifactRunSession,
   ArtifactStepSession,
-  CapsuleEffectRecordInput,
-  CapsuleEffectSnapshot,
-  CapsuleEffectSnapshotOptions,
-  CapsuleFileBody,
-  CapsuleFileOptions,
-  CapsuleFileRef,
-  CapsuleEffectRef,
   CapsuleRefs,
   CapsuleRunContext,
   CapsuleSpec,
   CaptureOptions,
   CapsulesService,
-  EffectRecord,
-  FailureManifest,
   InspectedRun,
   InternalCapsuleAdapter,
   OpenRunInput,
@@ -30,8 +20,8 @@ import type {
   StepIdentity,
   StepManifest,
 } from "./types.js";
-import { digestBytes, stableHash } from "../internal/hash.js";
-import { bodyToBytes } from "../internal/body.js";
+import { AttemptRecorder } from "./attempt-recorder.js";
+import { hashCapsuleInput, hashWorkflowRun } from "./content-digest.js";
 import {
   DEFAULT_BRANCH,
   RUN_INDEX_PATH,
@@ -40,17 +30,14 @@ import {
   commitMessageFor,
   failureCommitMessageFor,
   failurePath,
-  effectRecordPath,
-  filesBasePath,
   INIT_COMMIT_MESSAGE,
   inputHashPath,
   manifestPath,
   outputPath,
   runRepoName,
   stepDirName,
-} from "../git/layout.js";
-import { buildEffectRecord, effectDirectoryPath } from "../observability/effects.js";
-import { appendIndexEntry, readRunIndex } from "../observability/run-index.js";
+} from "./repo-layout.js";
+import { appendIndexEntry, readRunIndex } from "./run-index.js";
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -211,7 +198,7 @@ class CapsulesImpl implements CapsulesService {
     workflowName: string;
     instanceId: string;
   }): Promise<InspectedRun> {
-    const identityHash = await stableHash({
+    const identityHash = await hashWorkflowRun({
       workflowName: target.workflowName,
       instanceId: target.instanceId,
     });
@@ -331,8 +318,8 @@ async function resolveIdentity(
         "Pass the WorkflowStepContext that step.do() provides to its callback.",
     );
   }
-  const inputHash = await stableHash(input);
-  const identityHash = await stableHash({ workflowName, instanceId });
+  const inputHash = await hashCapsuleInput(input);
+  const identityHash = await hashWorkflowRun({ workflowName, instanceId });
   const stepDir = stepDirName(stepCount, stepName);
   const step: StepIdentity = {
     capsuleName: spec.name,
@@ -379,217 +366,6 @@ function initRunFiles(
   return new Map([
     [RUN_JSON_PATH, encoder.encode(JSON.stringify(runJson, null, 2) + "\n")],
   ]);
-}
-
-/** Buffers file writes and effect records for one step attempt. */
-class AttemptRecorder {
-  private readonly refs: Record<string, CapsuleFileRef> = {};
-  private readonly exposedRefs: Record<string, CapsuleFileRef> = {};
-  private readonly effectRecords: EffectRecord[] = [];
-  private readonly effectRefsByPath: CapsuleEffectRef[] = [];
-  private readonly kindCounts = new Map<string, number>();
-
-  constructor(
-    private readonly ctx: IdentityContext,
-    private readonly stepSession: ArtifactStepSession,
-    private readonly dedupeKey?: string,
-    private readonly maxFileBytes?: number,
-  ) {}
-
-  async write(
-    path: string,
-    body: CapsuleFileBody,
-    options?: CapsuleFileOptions,
-  ): Promise<CapsuleFileRef> {
-    const relPath = validateCapsulePath(path);
-    const { bytes, mediaType } = await bodyToBytes(relPath, body);
-    this.assertFileSize(relPath, bytes.byteLength);
-    const repoPath = `${filesBasePath(this.ctx.step.attemptDir)}/${relPath}`;
-    const refMediaType = options?.mediaType ?? mediaType;
-    const ref: CapsuleFileRef = {
-      path: repoPath,
-      ...(refMediaType !== undefined && { mediaType: refMediaType }),
-      size: bytes.byteLength,
-      digest: await digestBytes(bytes),
-    };
-    this.stepSession.stage(repoPath, bytes);
-    this.refs[relPath] = ref;
-    if (options?.exposeAs !== undefined) {
-      this.exposedRefs[options.exposeAs] = ref;
-    }
-    return ref;
-  }
-
-  async recordEffect(
-    kind: string,
-    record: CapsuleEffectRecordInput = {},
-  ): Promise<CapsuleEffectRef> {
-    const kindSeq = (this.kindCounts.get(kind) ?? 0) + 1;
-    this.kindCounts.set(kind, kindSeq);
-    const effectDir = effectDirectoryPath(this.ctx.step, kind, kindSeq);
-    const request = await this.writeEffectSnapshot(effectDir, "request", record.request);
-    const response = await this.writeEffectSnapshot(effectDir, "response", record.response);
-    const effectRef: CapsuleEffectRef = {
-      kind,
-      path: effectRecordPath(effectDir),
-      seq: this.effectRecords.length + 1,
-      ...(record.externalId !== undefined && { externalId: record.externalId }),
-      ...(record.httpStatus !== undefined && { httpStatus: record.httpStatus }),
-      ...(this.ctx.step.idempotencyKey !== undefined && {
-        idempotencyKey: this.ctx.step.idempotencyKey,
-      }),
-      ...(request !== undefined && { request }),
-      ...(response !== undefined && { response }),
-    };
-    const effectRecord = buildEffectRecord({
-      kind,
-      record,
-      ref: effectRef,
-      seq: effectRef.seq,
-      workflowName: this.ctx.workflowName,
-      instanceId: this.ctx.instanceId,
-      step: this.ctx.step,
-      now: new Date(),
-    });
-    this.stepSession.stage(
-      effectRef.path,
-      encoder.encode(JSON.stringify(effectRecord, null, 2) + "\n"),
-    );
-    this.effectRecords.push(effectRecord);
-    this.effectRefsByPath.push(effectRef);
-    return effectRef;
-  }
-
-  private async writeEffectSnapshot(
-    effectDir: string,
-    defaultName: "request" | "response",
-    snapshot: CapsuleEffectSnapshot | undefined,
-  ): Promise<CapsuleFileRef | undefined> {
-    if (snapshot === undefined) return undefined;
-    const body = isSnapshotObject(snapshot) ? snapshot.body : snapshot;
-    const snapshotPath = isSnapshotObject(snapshot)
-      ? validateCapsulePath(snapshot.path ?? `${defaultName}.json`)
-      : `${defaultName}.json`;
-    const repoPath = `${effectDir}/${snapshotPath}`;
-    const { bytes, mediaType } = await bodyToBytes(snapshotPath, body);
-    this.assertFileSize(repoPath, bytes.byteLength);
-    const refMediaType = isSnapshotObject(snapshot)
-      ? snapshot.mediaType ?? mediaType
-      : mediaType;
-    const ref: CapsuleFileRef = {
-      path: repoPath,
-      ...(refMediaType !== undefined && { mediaType: refMediaType }),
-      size: bytes.byteLength,
-      digest: await digestBytes(bytes),
-    };
-    this.stepSession.stage(repoPath, bytes);
-    return ref;
-  }
-
-  effects(): ReadonlyArray<EffectRecord> {
-    return this.effectRecords;
-  }
-
-  effectRefs(): ReadonlyArray<CapsuleEffectRef> {
-    return this.effectRefsByPath;
-  }
-
-  fileRefs(): Record<string, CapsuleFileRef> {
-    return { ...this.exposedRefs };
-  }
-
-  private allFileRefs(): Record<string, CapsuleFileRef> {
-    return { ...this.refs };
-  }
-
-  private assertFileSize(path: string, size: number): void {
-    if (this.maxFileBytes === undefined || size <= this.maxFileBytes) return;
-    throw new CapsuleError(
-      "INVALID_CAPSULE_REQUEST",
-      `Capsule file "${path}" is ${size} bytes; the configured limit is ` +
-        `${this.maxFileBytes} bytes. File bodies are buffered before commit, so ` +
-        `write a smaller file or record an external pointer. No commit was made.`,
-    );
-  }
-
-  buildManifest(
-    startedAt: Date,
-    output: unknown,
-    artifact: { repo: string; branch: string; parent?: string },
-  ): StepManifest {
-    const step = this.ctx.step;
-    return {
-      schemaVersion: 1,
-      workflow: {
-        name: this.ctx.workflowName,
-        instanceId: this.ctx.instanceId,
-      },
-      step: { name: step.stepName, count: step.stepCount, attempt: step.attempt },
-      capsule: {
-        name: step.capsuleName,
-        id: step.capsuleId,
-        ...(step.idempotencyKey !== undefined && {
-          idempotencyKey: step.idempotencyKey,
-        }),
-        ...(this.dedupeKey !== undefined && { dedupeKey: this.dedupeKey }),
-      },
-      input: { hash: step.inputHash },
-      artifact,
-      files: this.allFileRefs(),
-      exposedFiles: this.fileRefs(),
-      effects: this.effectRecords,
-      output,
-      startedAt: startedAt.toISOString(),
-      finishedAt: new Date().toISOString(),
-    };
-  }
-
-  buildFailureManifest(
-    failure: { code: string; message: string; retryable: boolean },
-    error: unknown,
-  ): FailureManifest {
-    const step = this.ctx.step;
-    return {
-      schemaVersion: 1,
-      error: {
-        name: error instanceof Error ? error.name : "Error",
-        message: failure.message,
-        retryable: failure.retryable,
-      },
-      workflow: {
-        name: this.ctx.workflowName,
-        instanceId: this.ctx.instanceId,
-      },
-      step: { name: step.stepName, count: step.stepCount, attempt: step.attempt },
-      capsule: {
-        name: step.capsuleName,
-        id: step.capsuleId,
-        ...(step.idempotencyKey !== undefined && {
-          idempotencyKey: step.idempotencyKey,
-        }),
-      },
-      input: { hash: step.inputHash },
-      files: this.allFileRefs(),
-      effects: this.effectRecords,
-      externalEffectPossible:
-        this.effectRecords.length > 0 || step.idempotencyKey !== undefined,
-      failedAt: new Date().toISOString(),
-    };
-  }
-}
-
-function isSnapshotObject(
-  snapshot: CapsuleEffectSnapshot,
-): snapshot is CapsuleEffectSnapshotOptions {
-  return (
-    snapshot !== null &&
-    typeof snapshot === "object" &&
-    !(snapshot instanceof Uint8Array) &&
-    !(snapshot instanceof ArrayBuffer) &&
-    !(typeof Blob !== "undefined" && snapshot instanceof Blob) &&
-    !(typeof ReadableStream !== "undefined" && snapshot instanceof ReadableStream) &&
-    "body" in snapshot
-  );
 }
 
 async function stageIndexEntry(

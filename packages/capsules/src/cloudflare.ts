@@ -1,9 +1,9 @@
-import { createRepositoryBackend } from "./artifacts/tree-backend.js";
+import { createRepositoryBackend } from "./repositories/backend.js";
 import {
   cloudflareRepositoryStore,
   type ArtifactsBindingLike,
   type CloudflareRepositoryStoreOptions,
-} from "./artifacts/workers.js";
+} from "./repositories/cloudflare-artifacts.js";
 import type { CloudflareAdapter, InternalCapsuleAdapter } from "./core/types.js";
 
 /**

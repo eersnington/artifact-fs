@@ -8,7 +8,7 @@ import type {
   StepIdentity,
   StepManifest,
 } from "../core/types.js";
-import { RUN_INDEX_PATH, manifestPath } from "../git/layout.js";
+import { RUN_INDEX_PATH, manifestPath } from "../core/repo-layout.js";
 
 /**
  * Minimal storage contract that memory, Cloudflare, local, and remote

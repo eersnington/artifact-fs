@@ -2,8 +2,8 @@ import type {
   ArtifactRunSession,
   RunIndex,
   RunIndexEntry,
-} from "../core/types.js";
-import { RUN_INDEX_PATH } from "../git/layout.js";
+} from "./types.js";
+import { RUN_INDEX_PATH } from "./repo-layout.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
