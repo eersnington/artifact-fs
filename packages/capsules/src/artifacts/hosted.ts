@@ -1,3 +1,4 @@
+import { encodeBase64 } from "@oslojs/encoding";
 import { CapsuleError } from "../core/errors.js";
 import type { CommittedStep } from "../core/types.js";
 import type { RepoHandle, TreeStore } from "./tree-backend.js";
@@ -122,21 +123,10 @@ export function httpStore(
   }
 }
 
-function encodeFiles(
-  files: ReadonlyMap<string, Uint8Array>,
-): Record<string, string> {
-  const out: Record<string, string> = {};
+function encodeFiles(files: ReadonlyMap<string, Uint8Array>): Record<string, string> {
+  const encoded: Record<string, string> = {};
   for (const [path, bytes] of files) {
-    out[path] = toBase64(bytes);
+    encoded[path] = encodeBase64(bytes);
   }
-  return out;
-}
-
-function toBase64(bytes: Uint8Array): string {
-  let binary = "";
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary);
+  return encoded;
 }

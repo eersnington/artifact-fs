@@ -51,44 +51,10 @@ export interface RepoHandle {
 
 const decoder = new TextDecoder();
 
-class TreeRunSession implements ArtifactRunSession {
-  constructor(readonly handle: RepoHandle) {}
-
-  get repo(): string {
-    return this.handle.repo;
-  }
-
-  get branch(): string {
-    return this.handle.branch;
-  }
-
-  readFile(path: string): Promise<Uint8Array | null> {
-    return this.handle.readFile(path);
-  }
-
-  head(): Promise<string | undefined> {
-    return this.handle.head();
-  }
-}
-
-class TreeStepSession implements ArtifactStepSession {
-  readonly staged = new Map<string, Uint8Array>();
-
-  constructor(readonly identity: StepIdentity) {}
-
-  stage(path: string, bytes: Uint8Array): void {
-    this.staged.set(path, bytes);
-  }
-
-  hasStagedFiles(): boolean {
-    // The run index and manifests are bookkeeping; "did the producer write
-    // anything" means files/ or effects/ content.
-    for (const path of this.staged.keys()) {
-      if (path.includes("/files/") || path.includes("/effects/")) return true;
-    }
-    return false;
-  }
-}
+type TreeRunSession = ArtifactRunSession & { readonly handle: RepoHandle };
+type TreeStepSession = ArtifactStepSession & {
+  readonly staged: Map<string, Uint8Array>;
+};
 
 export function createTreeBackend(store: TreeStore): ArtifactBackend {
   return {
@@ -100,7 +66,14 @@ export function createTreeBackend(store: TreeStore): ArtifactBackend {
         initFiles: input.initFiles,
         initMessage: input.initMessage,
       });
-      return new TreeRunSession(handle);
+      const session: TreeRunSession = {
+        handle,
+        repo: handle.repo,
+        branch: handle.branch,
+        readFile: (path) => handle.readFile(path),
+        head: () => handle.head(),
+      };
+      return session;
     },
 
     async resolveStep(
@@ -125,7 +98,21 @@ export function createTreeBackend(store: TreeStore): ArtifactBackend {
       _session: ArtifactRunSession,
       step: StepIdentity,
     ): Promise<ArtifactStepSession> {
-      return new TreeStepSession(step);
+      const staged = new Map<string, Uint8Array>();
+      const session: TreeStepSession = {
+        identity: step,
+        staged,
+        stage(path, bytes) {
+          staged.set(path, bytes);
+        },
+        hasStagedFiles() {
+          for (const path of staged.keys()) {
+            if (path.includes("/files/") || path.includes("/effects/")) return true;
+          }
+          return false;
+        },
+      };
+      return session;
     },
 
     async commitStep(

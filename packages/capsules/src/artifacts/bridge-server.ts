@@ -1,5 +1,20 @@
+import { decodeBase64 } from "@oslojs/encoding";
 import { DEFAULT_BRANCH } from "../git/layout.js";
 import { localNodeStore, type LocalNodeOptions } from "./local-node.js";
+
+type EncodedFiles = Record<string, string>;
+
+type OpenRunRequest = {
+  readonly repo?: string;
+  readonly branch?: string;
+  readonly initFiles?: EncodedFiles;
+  readonly initMessage?: string;
+};
+
+type CommitRequest = {
+  readonly files?: EncodedFiles;
+  readonly message?: string;
+};
 
 /**
  * Framework-neutral local bridge handler. Run this in a local Node service
@@ -16,21 +31,16 @@ export function createLocalBridgeHandler(options: LocalNodeOptions) {
     const url = new URL(request.url);
     try {
       if (request.method === "POST" && url.pathname === "/runs/open") {
-        const body = (await request.json()) as {
-          repo?: string;
-          branch?: string;
-          initFiles?: Record<string, string>;
-          initMessage?: string;
-        };
-        if (body.repo === undefined) {
-          return json({ error: "Missing repo." }, 400);
+        const openRequest = (await request.json()) as OpenRunRequest;
+        if (openRequest.repo === undefined) {
+          return Response.json({ error: "Missing repo." }, { status: 400 });
         }
-        const handle = await store.openRepo(body.repo, {
-          branch: body.branch ?? DEFAULT_BRANCH,
-          initFiles: decodeFiles(body.initFiles ?? {}),
-          initMessage: body.initMessage ?? "capsule: init workflow run",
+        const handle = await store.openRepo(openRequest.repo, {
+          branch: openRequest.branch ?? DEFAULT_BRANCH,
+          initFiles: decodeFiles(openRequest.initFiles ?? {}),
+          initMessage: openRequest.initMessage ?? "capsule: init workflow run",
         });
-        return json({
+        return Response.json({
           repo: handle.repo,
           branch: handle.branch,
           head: await handle.head(),
@@ -41,74 +51,60 @@ export function createLocalBridgeHandler(options: LocalNodeOptions) {
         url.pathname,
       );
       if (runMatch === null) {
-        return json({ error: "Not found." }, 404);
+        return Response.json({ error: "Not found." }, { status: 404 });
       }
-      const repo = decodeURIComponent(runMatch[1]!);
+      const repoName = decodeURIComponent(runMatch[1]!);
       const action = runMatch[2]!;
-      const handle = await store.openRepo(repo, {
+      const handle = await store.openRepo(repoName, {
         branch: DEFAULT_BRANCH,
         initFiles: new Map(),
         initMessage: "capsule: init workflow run",
       });
 
       if (request.method === "GET" && action === "head") {
-        return json({ head: await handle.head() });
+        return Response.json({ head: await handle.head() });
       }
 
       if (request.method === "GET" && action === "file") {
         const path = url.searchParams.get("path");
         if (path === null || path === "") {
-          return json({ error: "Missing path." }, 400);
+          return Response.json({ error: "Missing path." }, { status: 400 });
         }
         const bytes = await handle.readFile(path);
-        if (bytes === null) return json({ error: "File not found." }, 404);
+        if (bytes === null) {
+          return Response.json({ error: "File not found." }, { status: 404 });
+        }
         return new Response(bytes);
       }
 
       if (request.method === "POST" && action === "commit") {
-        const body = (await request.json()) as {
-          files?: Record<string, string>;
-          message?: string;
-        };
-        if (body.message === undefined) {
-          return json({ error: "Missing message." }, 400);
+        const commitRequest = (await request.json()) as CommitRequest;
+        if (commitRequest.message === undefined) {
+          return Response.json({ error: "Missing message." }, { status: 400 });
         }
         const committed = await handle.commit({
-          files: decodeFiles(body.files ?? {}),
-          message: body.message,
+          files: decodeFiles(commitRequest.files ?? {}),
+          message: commitRequest.message,
         });
-        return json(committed);
+        return Response.json(committed);
       }
 
-      return json({ error: "Method not allowed." }, 405);
+      return Response.json({ error: "Method not allowed." }, { status: 405 });
     } catch (error) {
-      return json(
+      return Response.json(
         {
           error: error instanceof Error ? error.message : String(error),
         },
-        500,
+        { status: 500 },
       );
     }
   };
 }
 
-function json(body: unknown, status = 200): Response {
-  return Response.json(body, { status });
-}
-
-function decodeFiles(files: Record<string, string>): Map<string, Uint8Array> {
-  const out = new Map<string, Uint8Array>();
-  for (const [path, base64] of Object.entries(files)) {
-    out.set(path, fromBase64(base64));
+function decodeFiles(files: EncodedFiles): Map<string, Uint8Array> {
+  const decoded = new Map<string, Uint8Array>();
+  for (const [path, encoded] of Object.entries(files)) {
+    decoded.set(path, decodeBase64(encoded));
   }
-  return out;
-}
-
-function fromBase64(base64: string): Uint8Array {
-  const binary = atob(base64);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) {
-    bytes[i] = binary.charCodeAt(i);
-  }
-  return bytes;
+  return decoded;
 }

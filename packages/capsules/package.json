@@ -32,11 +32,12 @@
     "side-effects"
   ],
   "dependencies": {
-    "isomorphic-git": "^1.27.1"
+    "@oslojs/encoding": "1.1.0",
+    "isomorphic-git": "1.27.1"
   },
   "devDependencies": {
-    "@types/node": "^24.10.1",
-    "typescript": "^6.0.3",
-    "vitest": "^4.1.8"
+    "@types/node": "24.10.1",
+    "typescript": "6.0.3",
+    "vitest": "4.1.8"
   }
 }

@@ -95,11 +95,9 @@ export function localNodeStore(options: LocalNodeOptions): TreeStore {
       }
     };
 
-    const writeFiles = async (
-      files: ReadonlyMap<string, Uint8Array>,
-    ): Promise<void> => {
-      for (const [rel, bytes] of files) {
-        const target = path.join(repoDir, rel);
+    const writeFiles = async (files: ReadonlyMap<string, Uint8Array>): Promise<void> => {
+      for (const [repoPath, bytes] of files) {
+        const target = path.join(repoDir, repoPath);
         await fs.mkdir(path.dirname(target), { recursive: true });
         await fs.writeFile(target, bytes);
       }
@@ -136,12 +134,18 @@ export function localNodeStore(options: LocalNodeOptions): TreeStore {
       branch: init.branch,
       head: headSha,
 
-      async readFile(rel: string): Promise<Uint8Array | null> {
+      async readFile(repoPath: string): Promise<Uint8Array | null> {
         try {
-          const data = await fs.readFile(path.join(repoDir, rel));
+          const data = await fs.readFile(path.join(repoDir, repoPath));
           return new Uint8Array(data);
-        } catch {
-          return null;
+        } catch (cause) {
+          if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
+          throw new CapsuleError(
+            "BACKEND_WRITE_FAILED",
+            `Could not read ${repoPath} from local capsule repo ${repoDir}: ${String(cause)}. ` +
+              `Committed history is intact; check local filesystem permissions and retry.`,
+            { cause },
+          );
         }
       },
 
@@ -159,18 +163,18 @@ export function localNodeStore(options: LocalNodeOptions): TreeStore {
         });
       },
 
-      async findCommitFor(rel: string): Promise<CommittedStep | undefined> {
+      async findCommitFor(repoPath: string): Promise<CommittedStep | undefined> {
         try {
-          const out = await git(
+          const logOutput = await git(
             "log",
             "-n",
             "1",
             "--format=%H %P",
             "--",
-            rel,
+            repoPath,
           );
-          if (out === "") return undefined;
-          const [commit, parent] = out.split(/\s+/);
+          if (logOutput === "") return undefined;
+          const [commit, parent] = logOutput.split(/\s+/);
           if (commit === undefined) return undefined;
           return {
             commit,
