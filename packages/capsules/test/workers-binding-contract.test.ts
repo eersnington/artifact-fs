@@ -3,9 +3,8 @@ import {
   Artifacts,
   Capsules,
   type ArtifactsBindingLike,
-  type GitOps,
-  type GitWorkspace,
 } from "../src/index.js";
+import type { GitOps, GitWorkspace } from "../src/artifacts/workers.js";
 
 const encoder = new TextEncoder();
 

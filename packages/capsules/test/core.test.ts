@@ -9,6 +9,7 @@ import {
   type WorkflowStepContextLike,
 } from "../src/index.js";
 import { DEFAULT_BRANCH } from "../src/git/layout.js";
+import type { InternalArtifactLayer, StandardSchemaV1 } from "../src/core/types.js";
 
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
@@ -36,7 +37,7 @@ async function readJson<T>(
   refs: { artifact: { repo: string }; workflow: { name: string; instanceId: string } },
   path: string,
 ): Promise<T> {
-  const session = await layer.backend.openRun({
+  const session = await internalLayer(layer).backend.openRun({
     workflowName: refs.workflow.name,
     instanceId: refs.workflow.instanceId,
     repoName: refs.artifact.repo,
@@ -54,7 +55,7 @@ async function readText(
   refs: { artifact: { repo: string }; workflow: { name: string; instanceId: string } },
   path: string,
 ): Promise<string> {
-  const session = await layer.backend.openRun({
+  const session = await internalLayer(layer).backend.openRun({
     workflowName: refs.workflow.name,
     instanceId: refs.workflow.instanceId,
     repoName: refs.artifact.repo,
@@ -65,6 +66,10 @@ async function readText(
   const bytes = await session.readFile(path);
   if (bytes === null) throw new Error(`missing ${path}`);
   return decoder.decode(bytes);
+}
+
+function internalLayer(layer: ArtifactLayer): InternalArtifactLayer {
+  return layer as InternalArtifactLayer;
 }
 
 describe("Capsules.capture with memory artifacts", () => {
@@ -187,6 +192,33 @@ describe("Capsules.capture with memory artifacts", () => {
     expect(second.artifact.commit).toBe(first.artifact.commit);
     expect(second.output).toEqual(first.output);
     expect(run).toHaveBeenCalledTimes(1);
+  });
+
+  it("hashes the schema-validated input passed to run", async () => {
+    const layer = Artifacts.memory();
+    const capsules = Capsules.layer(layer);
+    const inputSchema = {
+      "~standard": {
+        version: 1,
+        vendor: "test",
+        validate(value: unknown) {
+          const input = value as { amount: number };
+          return { value: { amount: input.amount * 2 } };
+        },
+      },
+    } satisfies StandardSchemaV1<unknown, { amount: number }>;
+
+    const refs = await capsules.capture({
+      workflow: workflow(),
+      step: step("coerce input"),
+      name: "coerced-input",
+      input: { amount: 600 },
+      inputSchema,
+      run: async ({ input }) => ({ amount: input.amount }),
+    });
+
+    expect(refs.capsule.inputHash).toBe(await stableHash({ amount: 1200 }));
+    expect(refs.output.amount).toBe(1200);
   });
 
   it("raises a non-retryable conflict when an existing attempt has a different input hash", async () => {
