@@ -18,8 +18,10 @@ import type {
   EffectRecord,
   FailureManifest,
   InspectedRun,
+  InternalArtifactLayer,
   OpenRunInput,
   RunIndexEntry,
+  StandardSchemaV1,
   StepIdentity,
   StepManifest,
 } from "./types.js";
@@ -68,16 +70,20 @@ export const Capsules = {
 };
 
 class CapsulesImpl implements CapsulesService {
-  constructor(private readonly layer: ArtifactLayer) {}
+  private readonly layer: InternalArtifactLayer;
+
+  constructor(layer: ArtifactLayer) {
+    this.layer = layer as InternalArtifactLayer;
+  }
 
   async capture<Input, Output>(
     spec: CapsuleSpec<Input, Output>,
   ): Promise<CapsuleRefs<Output>> {
     const capsuleName = validateCapsuleName(spec.name);
-    const identityCtx = await resolveIdentity(spec);
     const input = spec.inputSchema
       ? await validateInput(spec.inputSchema, spec.input, capsuleName)
       : spec.input;
+    const identityCtx = await resolveIdentity(spec, input);
 
     const backend = this.layer.backend;
     const session = await backend.openRun(identityCtx.openRun);
@@ -106,8 +112,12 @@ class CapsulesImpl implements CapsulesService {
     try {
       output = await spec.run({
         input,
-        files: { write: (p, b, o) => recorder.write(p, b, o) },
-        effects: { record: (k, d) => recorder.recordEffect(k, d) },
+        files: {
+          write: (path, body, options) => recorder.write(path, body, options),
+        },
+        effects: {
+          record: (kind, details) => recorder.recordEffect(kind, details),
+        },
         ...(step.idempotencyKey !== undefined
           ? { idempotencyKey: step.idempotencyKey }
           : {}),
@@ -273,6 +283,7 @@ type IdentityContext = {
 
 async function resolveIdentity(
   spec: CapsuleSpec<unknown, unknown>,
+  input: unknown,
 ): Promise<IdentityContext> {
   const workflowName = spec.workflow?.workflowName;
   const instanceId = spec.workflow?.instanceId;
@@ -308,7 +319,7 @@ async function resolveIdentity(
     );
   }
 
-  const inputHash = await stableHash(spec.input);
+  const inputHash = await stableHash(input);
   const identityHash = await stableHash({ workflowName, instanceId });
   const stepDir = stepDirName(stepCount, stepName);
   const step: StepIdentity = {
@@ -524,25 +535,13 @@ function serializeOutput(capsuleName: string, output: unknown): Uint8Array {
 }
 
 async function validateInput<Input>(
-  schema: {
-    "~standard": {
-      validate: (
-        v: unknown,
-      ) =>
-        | { value: Input; issues?: undefined }
-        | { issues: ReadonlyArray<{ message: string }> }
-        | Promise<
-            | { value: Input; issues?: undefined }
-            | { issues: ReadonlyArray<{ message: string }> }
-          >;
-    };
-  },
+  schema: StandardSchemaV1<unknown, Input>,
   input: unknown,
   capsuleName: string,
 ): Promise<Input> {
   const result = await schema["~standard"].validate(input);
   if (result.issues !== undefined) {
-    const detail = result.issues.map((i) => i.message).join("; ");
+    const detail = result.issues.map((issue) => issue.message).join("; ");
     throw invalidRequest(
       `Capsule "${capsuleName}" input failed schema validation: ${detail}. ` +
         `Nothing was written or committed.`,
@@ -556,25 +555,24 @@ function refsFromResolved<Output>(
   session: ArtifactRunSession,
   resolved: { manifest: StepManifest; commit: string; parent?: string },
 ): CapsuleRefs<Output> {
-  const m = resolved.manifest;
   return {
     capsule: {
-      name: m.capsule.name,
-      id: m.capsule.id,
-      inputHash: m.input.hash,
-      ...(m.capsule.idempotencyKey !== undefined
-        ? { idempotencyKey: m.capsule.idempotencyKey }
+      name: resolved.manifest.capsule.name,
+      id: resolved.manifest.capsule.id,
+      inputHash: resolved.manifest.input.hash,
+      ...(resolved.manifest.capsule.idempotencyKey !== undefined
+        ? { idempotencyKey: resolved.manifest.capsule.idempotencyKey }
         : {}),
-      ...(m.capsule.dedupeKey !== undefined
-        ? { dedupeKey: m.capsule.dedupeKey }
+      ...(resolved.manifest.capsule.dedupeKey !== undefined
+        ? { dedupeKey: resolved.manifest.capsule.dedupeKey }
         : {}),
     },
     workflow: {
-      name: m.workflow.name,
-      instanceId: m.workflow.instanceId,
-      stepName: m.step.name,
-      stepCount: m.step.count,
-      attempt: m.step.attempt,
+      name: resolved.manifest.workflow.name,
+      instanceId: resolved.manifest.workflow.instanceId,
+      stepName: resolved.manifest.step.name,
+      stepCount: resolved.manifest.step.count,
+      attempt: resolved.manifest.step.attempt,
     },
     artifact: {
       backend: backendKind,
@@ -583,10 +581,13 @@ function refsFromResolved<Output>(
       commit: resolved.commit,
       ...(resolved.parent !== undefined ? { parent: resolved.parent } : {}),
     },
-    files: { ...m.files },
-    output: m.output as Output,
+    files: { ...resolved.manifest.files },
+    output: resolved.manifest.output as Output,
     manifestPath: manifestPath(
-      attemptDirPath(stepDirName(m.step.count, m.step.name), m.step.attempt),
+      attemptDirPath(
+        stepDirName(resolved.manifest.step.count, resolved.manifest.step.name),
+        resolved.manifest.step.attempt,
+      ),
     ),
     ...(resolved.parent !== undefined
       ? { diff: { base: resolved.parent, head: resolved.commit } }

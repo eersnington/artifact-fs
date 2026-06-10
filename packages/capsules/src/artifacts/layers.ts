@@ -1,6 +1,7 @@
 import type {
   ArtifactLayer,
   HostedArtifactLayer,
+  InternalArtifactLayer,
   LocalBridgeArtifactLayer,
   LocalNodeArtifactLayer,
   MemoryArtifactLayer,
@@ -23,10 +24,7 @@ import { httpStore } from "./hosted.js";
 export const Artifacts = {
   /** In-memory store for tests, examples, and deterministic unit runs. */
   memory(): MemoryArtifactLayer {
-    return {
-      kind: "memory",
-      backend: createTreeBackend(memoryStore()),
-    };
+    return layer("memory", createTreeBackend(memoryStore())) as MemoryArtifactLayer;
   },
 
   /**
@@ -40,10 +38,10 @@ export const Artifacts = {
     binding: ArtifactsBindingLike,
     options?: WorkersStoreOptions,
   ): WorkersArtifactLayer {
-    return {
-      kind: "workers-binding",
-      backend: createTreeBackend(workersStore(binding, options)),
-    };
+    return layer(
+      "workers-binding",
+      createTreeBackend(workersStore(binding, options)),
+    ) as WorkersArtifactLayer;
   },
 
   /**
@@ -51,10 +49,10 @@ export const Artifacts = {
    * Node-only. Use ArtifactFS to mount/inspect the same repos.
    */
   localNode(options: LocalNodeOptions): LocalNodeArtifactLayer {
-    return {
-      kind: "local-node",
-      backend: createTreeBackend(localNodeStore(options)),
-    };
+    return layer(
+      "local-node",
+      createTreeBackend(localNodeStore(options)),
+    ) as LocalNodeArtifactLayer;
   },
 
   /**
@@ -62,17 +60,24 @@ export const Artifacts = {
    * and a local bridge process owns the ArtifactFS mount and native git.
    */
   localBridge(options: { url: string }): LocalBridgeArtifactLayer {
-    return {
-      kind: "local-bridge",
-      backend: createTreeBackend(httpStore("local-bridge", options)),
-    };
+    return layer(
+      "local-bridge",
+      createTreeBackend(httpStore("local-bridge", options)),
+    ) as LocalBridgeArtifactLayer;
   },
 
   /** Self-hosted or future hosted artifact service over HTTP. */
   hosted(options: { url: string; token?: string }): HostedArtifactLayer {
-    return {
-      kind: "hosted",
-      backend: createTreeBackend(httpStore("hosted", options)),
-    };
+    return layer(
+      "hosted",
+      createTreeBackend(httpStore("hosted", options)),
+    ) as HostedArtifactLayer;
   },
 } satisfies Record<string, (...args: never[]) => ArtifactLayer>;
+
+function layer(kind: string, backend: InternalArtifactLayer["backend"]): InternalArtifactLayer {
+  return {
+    kind,
+    backend,
+  };
+}

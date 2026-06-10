@@ -362,7 +362,10 @@ export type ArtifactBackend = {
 /** Public artifact layer handle. Construct via the `Artifacts` namespace. */
 export type ArtifactLayer = {
   readonly kind: string;
-  /** @internal */
+};
+
+/** Internal artifact layer handle. Public consumers only see `ArtifactLayer`. */
+export type InternalArtifactLayer = ArtifactLayer & {
   readonly backend: ArtifactBackend;
 };
 
