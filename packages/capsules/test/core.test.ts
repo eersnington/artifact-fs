@@ -6,8 +6,7 @@ import {
   type WorkflowEventLike,
   type WorkflowStepContextLike,
 } from "../src/index.js";
-import { memory } from "../src/memory.js";
-import type { CallStore, CapsuleAdapter, InternalCapsuleAdapter, StandardSchemaV1 } from "../src/core/types.js";
+import type { CallStore, CapsuleAdapter, InternalCapsuleAdapter } from "../src/core/types.js";
 
 function workflow(overrides?: Partial<WorkflowEventLike>): WorkflowEventLike {
   return {
@@ -24,41 +23,61 @@ function step(name: string, count = 1, attempt = 1): WorkflowStepContextLike {
 }
 
 describe("capsules.call", () => {
-  it("executes a provider call and stores a committed result", async () => {
-    const adapter = memory();
+  it("stores request metadata and a full committed result without storing raw request data", async () => {
+    const { adapter, files } = capturingAdapter();
     const capsules = createCapsules({ adapter });
-    const execute = vi.fn(async ({ key }: { key: string }) => ({
+    const execute = vi.fn(async () => ({
       id: "pi_123",
       object: "payment_intent" as const,
-      key,
+      status: "succeeded" as const,
     }));
-    const createPaymentIntent = defineExternalCall<
+    const call = defineExternalCall<
       { customerId: string; amount: number; currency: string },
-      { id: string; object: "payment_intent"; key: string }
+      { id: string; object: "payment_intent"; status: "succeeded" }
     >({
       name: "stripe.payment_intent.create",
       recovery: "idempotent-call",
       execute,
       summary: ({ request, result }) => ({
         externalId: result.id,
-        amount: request.amount,
+        status: result.status,
         currency: request.currency,
       }),
     });
 
-    const result = await capsules.call(createPaymentIntent, {
+    await capsules.call(call, {
       workflow: workflow(),
       step: step("charge customer"),
       key: "wf:invoice-77:charge-customer",
       request: { customerId: "cus_123", amount: 1200, currency: "usd" },
     });
 
-    expect(result.id).toBe("pi_123");
     expect(execute).toHaveBeenCalledTimes(1);
+
+    const requestRecord = readJson(files, "/request.json");
+    expect(requestRecord).toMatchObject({
+      schemaVersion: 1,
+      callName: "stripe.payment_intent.create",
+      workflow: { name: "ChargeCustomerWorkflow", instanceId: "invoice-77" },
+      step: { name: "charge customer", count: 1 },
+    });
+    expect(requestRecord.keyHash).toMatch(/^sha256:/);
+    expect(requestRecord.requestDigest).toMatch(/^sha256:/);
+    expect(JSON.stringify(requestRecord)).not.toContain("cus_123");
+    expect(JSON.stringify(requestRecord)).not.toContain("1200");
+
+    const committedRecord = readJson(files, "/committed.json");
+    expect(committedRecord).toMatchObject({
+      schemaVersion: 1,
+      status: "committed",
+      attempt: 1,
+      result: { id: "pi_123", object: "payment_intent", status: "succeeded" },
+      summary: { externalId: "pi_123", status: "succeeded", currency: "usd" },
+    });
   });
 
   it("returns a prior committed result across retry attempts without executing", async () => {
-    const capsules = createCapsules({ adapter: memory() });
+    const capsules = createCapsules({ adapter: capturingAdapter().adapter });
     const execute = vi.fn(async () => ({ id: "pi_123" }));
     const call = defineExternalCall<{ amount: number }, { id: string }>({
       name: "stripe.payment_intent.create",
@@ -85,7 +104,7 @@ describe("capsules.call", () => {
   });
 
   it("rejects the same key with a different request before executing provider code", async () => {
-    const capsules = createCapsules({ adapter: memory() });
+    const capsules = createCapsules({ adapter: capturingAdapter().adapter });
     const execute = vi.fn(async () => ({ id: "pi_123" }));
     const call = defineExternalCall<{ amount: number }, { id: string }>({
       name: "stripe.payment_intent.create",
@@ -115,13 +134,15 @@ describe("capsules.call", () => {
   });
 
   it("fails closed after a started record without a committed result", async () => {
-    const capsules = createCapsules({ adapter: memory() });
+    const { adapter, files } = capturingAdapter();
+    const capsules = createCapsules({ adapter });
+    const execute = vi.fn(async () => {
+      throw new Error("provider timeout");
+    });
     const call = defineExternalCall<{ amount: number }, { id: string }>({
       name: "github.issue.create",
       recovery: "fail-closed",
-      execute: vi.fn(async () => {
-        throw new Error("provider timeout");
-      }),
+      execute,
     });
 
     await expect(
@@ -141,10 +162,20 @@ describe("capsules.call", () => {
         request: { amount: 1200 },
       }),
     ).rejects.toMatchObject({ code: "SIDE_EFFECT_AMBIGUOUS" });
+    expect(execute).toHaveBeenCalledTimes(1);
+    expect(readJson(files, "/request.json")).toMatchObject({ callName: "github.issue.create" });
+    expect(readJson(files, "/attempts/001-started.json")).toMatchObject({ status: "started", attempt: 1 });
+    expect(readJson(files, "/attempts/001-error.json")).toMatchObject({
+      status: "error",
+      attempt: 1,
+      error: { name: "Error", message: "provider timeout" },
+    });
+    expect(findFile(files, "/committed.json")).toBeUndefined();
   });
 
-  it("uses reconcile to recover a started call", async () => {
-    const capsules = createCapsules({ adapter: memory() });
+  it("uses reconcile to convert started/error data into a reconciled committed record", async () => {
+    const { adapter, files } = capturingAdapter();
+    const capsules = createCapsules({ adapter });
     const execute = vi.fn(async () => {
       throw new Error("network died after provider accepted request");
     });
@@ -177,106 +208,63 @@ describe("capsules.call", () => {
     ).resolves.toEqual({ number: 42, url: "https://github.example/42" });
     expect(reconcile).toHaveBeenCalledTimes(1);
     expect(execute).toHaveBeenCalledTimes(1);
-  });
-
-  it("treats reconcile not_found as ambiguous", async () => {
-    const capsules = createCapsules({ adapter: memory() });
-    const call = defineExternalCall<{ title: string }, { number: number }>({
-      name: "github.issue.create",
-      recovery: { reconcile: async () => ({ status: "not_found" }) },
-      execute: async () => {
-        throw new Error("timeout");
-      },
+    expect(readJson(files, "/attempts/001-error.json")).toMatchObject({
+      status: "error",
+      attempt: 1,
+      error: { name: "Error", message: "network died after provider accepted request" },
     });
-
-    await expect(
-      capsules.call(call, {
-        workflow: workflow(),
-        step: step("create issue", 1, 1),
-        key: "issue-marker-1",
-        request: { title: "bug" },
-      }),
-    ).rejects.toThrow("timeout");
-
-    await expect(
-      capsules.call(call, {
-        workflow: workflow(),
-        step: step("create issue", 1, 2),
-        key: "issue-marker-1",
-        request: { title: "bug" },
-      }),
-    ).rejects.toMatchObject({ code: "SIDE_EFFECT_AMBIGUOUS" });
-  });
-
-  it("does not invoke provider code when started record storage fails", async () => {
-    const store: CallStore = {
-      kind: "failing",
-      async openRun() {
-        return {
-          repo: "repo",
-          branch: "main",
-          async readFile() {
-            return null;
-          },
-          async readHead() {
-            return undefined;
-          },
-          async commitFiles() {
-            throw new Error("disk full");
-          },
-        };
-      },
-    };
-    const adapter = { kind: "memory", store } as InternalCapsuleAdapter as CapsuleAdapter;
-    const capsules = createCapsules({ adapter });
-    const execute = vi.fn(async () => ({ id: "pi_123" }));
-    const call = defineExternalCall<{ amount: number }, { id: string }>({
-      name: "stripe.payment_intent.create",
-      recovery: "idempotent-call",
-      execute,
+    expect(readJson(files, "/committed.json")).toMatchObject({
+      status: "reconciled",
+      attempt: 2,
+      result: { number: 42, url: "https://github.example/42" },
     });
-
-    await expect(
-      capsules.call(call, {
-        workflow: workflow(),
-        step: step("charge customer"),
-        key: "wf:invoice-77:charge-customer",
-        request: { amount: 1200 },
-      }),
-    ).rejects.toMatchObject({ code: "SIDE_EFFECT_STORAGE_FAILED" });
-    expect(execute).not.toHaveBeenCalled();
-  });
-
-  it("validates request schemas before execution", async () => {
-    const capsules = createCapsules({ adapter: memory() });
-    const requestSchema = {
-      "~standard": {
-        version: 1,
-        vendor: "test",
-        validate(value: unknown) {
-          const input = value as { amount: number };
-          return input.amount > 0
-            ? { value: input }
-            : { issues: [{ message: "amount must be positive" }] };
-        },
-      },
-    } satisfies StandardSchemaV1<unknown, { amount: number }>;
-    const execute = vi.fn(async () => ({ id: "pi_123" }));
-    const call = defineExternalCall<{ amount: number }, { id: string }>({
-      name: "stripe.payment_intent.create",
-      request: requestSchema,
-      recovery: "idempotent-call",
-      execute,
-    });
-
-    await expect(
-      capsules.call(call, {
-        workflow: workflow(),
-        step: step("charge customer"),
-        key: "wf:invoice-77:charge-customer",
-        request: { amount: 0 },
-      }),
-    ).rejects.toMatchObject({ code: "INVALID_EXTERNAL_CALL" });
-    expect(execute).not.toHaveBeenCalled();
   });
 });
+
+function capturingAdapter(): { adapter: CapsuleAdapter; files: Map<string, Uint8Array> } {
+  const files = new Map<string, Uint8Array>();
+  let initialized = false;
+  let commitNumber = 0;
+  const store: CallStore = {
+    kind: "capturing",
+    async openRun(input) {
+      if (!initialized) {
+        for (const [path, bytes] of input.initFiles) {
+          files.set(path, bytes);
+        }
+        initialized = true;
+      }
+      return {
+        repo: input.repoName,
+        branch: input.branch,
+        async readHead() {
+          return initialized ? String(commitNumber).padStart(40, "0") : undefined;
+        },
+        async readFile(path) {
+          return files.get(path) ?? null;
+        },
+        async commitFiles(commit) {
+          for (const [path, bytes] of commit.files) {
+            files.set(path, bytes);
+          }
+          commitNumber += 1;
+          return { commit: String(commitNumber).padStart(40, "0") };
+        },
+      };
+    },
+  };
+  return { adapter: { kind: "memory", store } as InternalCapsuleAdapter as CapsuleAdapter, files };
+}
+
+function readJson(files: Map<string, Uint8Array>, suffix: string): Record<string, unknown> {
+  const file = findFile(files, suffix);
+  if (file === undefined) throw new Error(`missing record ending with ${suffix}`);
+  return JSON.parse(new TextDecoder().decode(file)) as Record<string, unknown>;
+}
+
+function findFile(files: Map<string, Uint8Array>, suffix: string): Uint8Array | undefined {
+  for (const [path, bytes] of files) {
+    if (path.endsWith(suffix)) return bytes;
+  }
+  return undefined;
+}

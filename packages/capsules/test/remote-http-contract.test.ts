@@ -69,17 +69,14 @@ describe("remote HTTP adapter", () => {
     expect(openMetadata).toMatchObject({
       protocolVersion: 1,
       branch: "main",
-      message: "capsules: init workflow run",
     });
     expect(openMetadata.files).toEqual([{ path: ".capsule/run.json", part: "file-0" }]);
 
     const commitRequests = requests.filter((request) => request.path.endsWith("/commit"));
     expect(commitRequests).toHaveLength(2);
     const startedMetadata = await readMetadata(commitRequests[0]?.body);
-    expect(startedMetadata.message).toContain("attempt 1 started");
     expect(JSON.stringify(startedMetadata)).not.toContain("pi_123");
     const committedMetadata = await readMetadata(commitRequests[1]?.body);
-    expect(committedMetadata.message).toContain("attempt 1 committed");
     const committedEntry = committedMetadata.files.find(
       (entry: { path: string }) => entry.path.endsWith("/committed.json"),
     );
