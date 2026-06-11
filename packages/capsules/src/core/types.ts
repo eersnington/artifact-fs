@@ -1,10 +1,3 @@
-/**
- * Core public and internal types for workflow-capsules.
- *
- * Workflow types are structural ("-Like") so this package never imports
- * `cloudflare:workers` at runtime and works with test doubles.
- */
-
 /** Structural subset of Cloudflare's `WorkflowEvent<T>`. */
 export type WorkflowEventLike = {
   readonly instanceId: string;
@@ -29,9 +22,7 @@ export interface StandardSchemaV1<In = unknown, Out = In> {
     readonly vendor: string;
     readonly validate: (
       value: unknown,
-    ) =>
-      | StandardSchemaResult<Out>
-      | Promise<StandardSchemaResult<Out>>;
+    ) => StandardSchemaResult<Out> | Promise<StandardSchemaResult<Out>>;
   };
   readonly "~types"?: { readonly input: In; readonly output: Out } | undefined;
 }
@@ -40,37 +31,26 @@ export type StandardSchemaResult<Out> =
   | { readonly value: Out; readonly issues?: undefined }
   | { readonly issues: ReadonlyArray<{ readonly message: string }> };
 
-/** Internal branded identifier types used by validation helpers. */
-export type CapsuleName = string & { readonly __brand: "CapsuleName" };
-export type CapsulePath = string & { readonly __brand: "CapsulePath" };
-
-/** Internal body type retained for compact JSON evidence helpers. */
-export type CapsuleFileBody =
-  | string
-  | Uint8Array
-  | ArrayBuffer
-  | Blob
-  | ReadableStream<Uint8Array>
-  | null
-  | boolean
-  | number
-  | { readonly [key: string]: unknown }
-  | ReadonlyArray<unknown>;
-
-export type ProviderSummary = Readonly<Record<string, unknown>>;
-
 export type ReconcileResult<Result> =
   | { readonly status: "found"; readonly result: Result }
   | { readonly status: "not_found" }
   | { readonly status: "inconclusive"; readonly reason?: string };
 
-export type ReconcileContext<Request> = {
+export type ExternalCallContext<Request> = {
   readonly request: Request;
   readonly key: string;
   readonly workflow: WorkflowEventLike;
   readonly step: WorkflowStepContextLike;
   readonly attempt: number;
 };
+
+export type ReconcileContext<Request> = ExternalCallContext<Request>;
+export type ExternalCallExecuteContext<Request> = ExternalCallContext<Request>;
+
+export type ExternalCallSummaryContext<Request, Result> =
+  ExternalCallContext<Request> & {
+    readonly result: Result;
+  };
 
 export type ExternalCallRecovery<Request, Result> =
   | "idempotent-call"
@@ -81,22 +61,6 @@ export type ExternalCallRecovery<Request, Result> =
       ) => Promise<ReconcileResult<Result>>;
     };
 
-export type ExternalCallExecuteContext<Request> = {
-  readonly request: Request;
-  readonly key: string;
-  readonly workflow: WorkflowEventLike;
-  readonly step: WorkflowStepContextLike;
-  readonly attempt: number;
-};
-
-export type ExternalCallSummaryContext<Request, Result> = {
-  readonly request: Request;
-  readonly result: Result;
-  readonly key: string;
-  readonly workflow: WorkflowEventLike;
-  readonly step: WorkflowStepContextLike;
-};
-
 export type ExternalCallSpec<Request, Result> = {
   readonly name: string;
   readonly request?: StandardSchemaV1<unknown, Request>;
@@ -105,7 +69,7 @@ export type ExternalCallSpec<Request, Result> = {
   readonly execute: (ctx: ExternalCallExecuteContext<Request>) => Promise<Result>;
   readonly summary?: (
     ctx: ExternalCallSummaryContext<Request, Result>,
-  ) => ProviderSummary;
+  ) => Readonly<Record<string, unknown>>;
 };
 
 export type ExternalCall<Request, Result> = ExternalCallSpec<Request, Result>;
@@ -124,14 +88,21 @@ export type Capsules = {
   ): Promise<Result>;
 };
 
+export type CallPaths = {
+  readonly request: string;
+  readonly committed: string;
+  readonly attemptStarted: string;
+  readonly attemptError: string;
+};
+
 export type CallIdentity = {
   readonly workflowName: string;
   readonly instanceId: string;
   readonly callName: string;
-  readonly key: string;
   readonly keyHash: string;
   readonly requestDigest: string;
-  readonly callDir: string;
+  readonly repoName: string;
+  readonly paths: CallPaths;
 };
 
 export type OpenRunInput = {
@@ -139,37 +110,29 @@ export type OpenRunInput = {
   readonly instanceId: string;
   readonly repoName: string;
   readonly branch: string;
-  /** Repo-absolute path -> bytes written by the init commit when the repo is new. */
   readonly initFiles: ReadonlyMap<string, Uint8Array>;
   readonly initMessage: string;
 };
 
-export type ArtifactRunSession = {
-  readonly repo: string;
-  readonly branch: string;
-  /** Read a file from the current head tree. Returns null when absent. */
-  readFile(path: string): Promise<Uint8Array | null>;
-  head(): Promise<string | undefined>;
-};
-
-export type ArtifactWriteSession = {
-  stage(path: string, bytes: Uint8Array): void;
-};
-
-export type CommittedRecord = {
+export type CommitResult = {
   readonly commit: string;
   readonly parent?: string;
 };
 
-export type ArtifactBackend = {
+export type CallStoreRun = {
+  readonly repo: string;
+  readonly branch: string;
+  readHead(): Promise<string | undefined>;
+  readFile(path: string): Promise<Uint8Array | null>;
+  commitFiles(input: {
+    readonly files: ReadonlyMap<string, Uint8Array>;
+    readonly message: string;
+  }): Promise<CommitResult>;
+};
+
+export type CallStore = {
   readonly kind: string;
-  openRun(input: OpenRunInput): Promise<ArtifactRunSession>;
-  beginWrite(): Promise<ArtifactWriteSession>;
-  commitWrite(
-    session: ArtifactRunSession,
-    write: ArtifactWriteSession,
-    input: { readonly message: string },
-  ): Promise<CommittedRecord>;
+  openRun(input: OpenRunInput): Promise<CallStoreRun>;
 };
 
 /** Public adapter handle. Construct via an adapter subpath module. */
@@ -177,9 +140,8 @@ export type CapsuleAdapter = {
   readonly kind: string;
 };
 
-/** Internal adapter handle with the backend implementation attached. */
 export type InternalCapsuleAdapter = CapsuleAdapter & {
-  readonly backend: ArtifactBackend;
+  readonly store: CallStore;
 };
 
 export type CloudflareAdapter = CapsuleAdapter & { readonly kind: "cloudflare" };
@@ -197,28 +159,11 @@ export type CallRequestRecord = {
   readonly createdAt: string;
 };
 
-export type StartedCallRecord = {
-  readonly schemaVersion: 1;
-  readonly status: "started";
-  readonly attempt: number;
-  readonly startedAt: string;
-};
-
 export type CommittedCallRecord<Result = unknown> = {
   readonly schemaVersion: 1;
   readonly status: "committed" | "reconciled";
   readonly attempt: number;
   readonly result: Result;
+  readonly summary?: Readonly<Record<string, unknown>>;
   readonly committedAt: string;
-};
-
-export type AttemptErrorRecord = {
-  readonly schemaVersion: 1;
-  readonly status: "error";
-  readonly attempt: number;
-  readonly error: {
-    readonly name: string;
-    readonly message: string;
-  };
-  readonly failedAt: string;
 };

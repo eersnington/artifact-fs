@@ -1,6 +1,5 @@
 import { CapsuleError } from "../core/errors.js";
-import type { CommittedRecord } from "../core/types.js";
-import type { RepositorySession, RepositoryStore } from "./backend.js";
+import type { CallStore, CallStoreRun, CommitResult } from "../core/types.js";
 
 /**
  * HTTP call-history store shared by remote HTTP-backed adapters. The service
@@ -41,7 +40,7 @@ type CommitFilesMetadata = {
   readonly files: readonly MultipartFileEntry[];
 };
 
-export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStore {
+export function remoteHttpStore(options: RemoteHttpStoreOptions): CallStore {
   const baseUrl = options.url.replace(/\/+$/, "");
   const fetchRemote = options.fetch ?? fetch;
 
@@ -62,8 +61,8 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStor
       response = await fetchRemote(`${baseUrl}${route}`, requestOptions);
     } catch (error) {
       throw new CapsuleError(
-          "SIDE_EFFECT_STORAGE_FAILED",
-        `Could not reach the remote artifact service at ${baseUrl} (${method} ${route}): ` +
+        "SIDE_EFFECT_STORAGE_FAILED",
+        `Could not reach the remote call-history service at ${baseUrl} (${method} ${route}): ` +
           `${error instanceof Error ? error.message : String(error)}. No commit was made. ` +
           "Check the service URL and network access.",
         { cause: error },
@@ -80,7 +79,7 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStor
     const text = await response.text().catch(() => "");
     throw new CapsuleError(
       "SIDE_EFFECT_STORAGE_FAILED",
-      `Remote artifact service rejected ${operation} with HTTP ${response.status}` +
+      `Remote call-history service rejected ${operation} with HTTP ${response.status}` +
         (text !== "" ? `: ${text.slice(0, 500)}` : ".") +
         " Committed history on the service is intact.",
     );
@@ -89,23 +88,23 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStor
   return {
     kind: "remote",
 
-    async openRepository(repoName, init) {
+    async openRun(input) {
       const response = await sendRemoteRequest("POST", "/runs/open", buildMultipartBody({
         protocolVersion: 1,
-        repo: repoName,
-        branch: init.branch,
-        message: init.initMessage,
-        files: fileEntries(init.initFiles),
-      }, init.initFiles));
-      await assertRemoteResponseOk(response, `open run repo "${repoName}"`);
-      return createRemoteRepositorySession(repoName, init.branch);
+        repo: input.repoName,
+        branch: input.branch,
+        message: input.initMessage,
+        files: fileEntries(input.initFiles),
+      }, input.initFiles));
+      await assertRemoteResponseOk(response, `open run repo "${input.repoName}"`);
+      return createRemoteRun(input.repoName, input.branch);
     },
   };
 
-  function createRemoteRepositorySession(
+  function createRemoteRun(
     repoName: string,
     branch: string,
-  ): RepositorySession {
+  ): CallStoreRun {
     const repoRoute = `/runs/${encodeURIComponent(repoName)}`;
     return {
       repo: repoName,
@@ -128,14 +127,14 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): RepositoryStor
         return new Uint8Array(await response.arrayBuffer());
       },
 
-      async commitFiles(input): Promise<CommittedRecord> {
+      async commitFiles(commit): Promise<CommitResult> {
         const response = await sendRemoteRequest("POST", `${repoRoute}/commit`, buildMultipartBody({
           protocolVersion: 1,
-          message: input.message,
-          files: fileEntries(input.files),
-        }, input.files));
+          message: commit.message,
+          files: fileEntries(commit.files),
+        }, commit.files));
         await assertRemoteResponseOk(response, "commit");
-        return (await response.json()) as CommittedRecord;
+        return (await response.json()) as CommitResult;
       },
     };
   }

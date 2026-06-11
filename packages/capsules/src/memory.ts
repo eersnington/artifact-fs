@@ -1,5 +1,4 @@
-import { createRepositoryBackend } from "./repositories/backend.js";
-import { memoryRepositoryStore } from "./repositories/memory.js";
+import { memoryCallStore } from "./repositories/memory.js";
 import type { InternalCapsuleAdapter, MemoryAdapter } from "./core/types.js";
 
 /**
@@ -13,6 +12,6 @@ import type { InternalCapsuleAdapter, MemoryAdapter } from "./core/types.js";
 export function memory(): MemoryAdapter {
   return {
     kind: "memory",
-    backend: createRepositoryBackend(memoryRepositoryStore()),
+    store: memoryCallStore(),
   } as InternalCapsuleAdapter as MemoryAdapter;
 }

@@ -1,5 +1,4 @@
 import { remoteHttpStore, type RemoteHttpStoreOptions } from "./repositories/remote-http.js";
-import { createRepositoryBackend } from "./repositories/backend.js";
 import type { InternalCapsuleAdapter, RemoteAdapter } from "./core/types.js";
 
 export type RemoteOptions = RemoteHttpStoreOptions;
@@ -14,6 +13,6 @@ export type RemoteOptions = RemoteHttpStoreOptions;
 export function remote(options: RemoteOptions): RemoteAdapter {
   return {
     kind: "remote",
-    backend: createRepositoryBackend(remoteHttpStore(options)),
+    store: remoteHttpStore(options),
   } as InternalCapsuleAdapter as RemoteAdapter;
 }

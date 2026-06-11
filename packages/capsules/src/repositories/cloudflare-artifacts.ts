@@ -1,11 +1,6 @@
 import { CapsuleError, invalidExternalCall } from "../core/errors.js";
-import type { CommittedRecord } from "../core/types.js";
+import type { CallStore, CallStoreRun, CommitResult, OpenRunInput } from "../core/types.js";
 import { MemoryFS } from "./isomorphic-git-memory-fs.js";
-import {
-  SerialCommitQueue,
-  type RepositorySession,
-  type RepositoryStore,
-} from "./backend.js";
 
 /**
  * Structural types for the Cloudflare Artifacts Workers binding
@@ -77,7 +72,7 @@ export type PushableGitWorkspace = {
   commitAndPush(
     files: ReadonlyMap<string, Uint8Array>,
     message: string,
-  ): Promise<CommittedRecord>;
+  ): Promise<CommitResult>;
 };
 
 const DEFAULT_AUTHOR = {
@@ -85,11 +80,11 @@ const DEFAULT_AUTHOR = {
   email: "capsules@workflow.invalid",
 };
 
-export function cloudflareRepositoryStore(
+export function cloudflareCallStore(
   binding: ArtifactsBindingLike,
   options?: CloudflareRepositoryStoreOptions,
-): RepositoryStore {
-  const repositories = new Map<string, Promise<RepositorySession>>();
+): CallStore {
+  const repositories = new Map<string, Promise<CallStoreRun>>();
   const gitWorkspaceFactory =
     options?.gitWorkspaceFactory ?? createIsomorphicGitWorkspaceFactory();
   const author = options?.author ?? DEFAULT_AUTHOR;
@@ -98,32 +93,25 @@ export function cloudflareRepositoryStore(
   return {
     kind: "workers-binding",
 
-    openRepository(name, init) {
-      let pending = repositories.get(name);
+    openRun(input) {
+      let pending = repositories.get(input.repoName);
       if (pending === undefined) {
-        pending = openCloudflareRepository(name, init).catch((error) => {
+        pending = openCloudflareRepository(input).catch((error) => {
           // Do not cache failures; the next call should retry.
-          repositories.delete(name);
+          repositories.delete(input.repoName);
           throw error;
         });
-        repositories.set(name, pending);
+        repositories.set(input.repoName, pending);
       }
       return pending;
     },
   };
 
-  async function openCloudflareRepository(
-    name: string,
-    init: {
-      readonly branch: string;
-      readonly initFiles: ReadonlyMap<string, Uint8Array>;
-      readonly initMessage: string;
-    },
-  ): Promise<RepositorySession> {
-    const opened = await resolveArtifactsRepository(name, init.branch);
+  async function openCloudflareRepository(input: OpenRunInput): Promise<CallStoreRun> {
+    const opened = await resolveArtifactsRepository(input.repoName, input.branch);
     const workspace = await gitWorkspaceFactory.open({
       remote: opened.remote,
-      branch: init.branch,
+      branch: input.branch,
       isNew: opened.isNew,
       auth: { username: "x", password: opened.writeToken },
       author,
@@ -132,19 +120,22 @@ export function cloudflareRepositoryStore(
     // A repo can exist with no commits (created, then the init push failed).
     if ((await workspace.readHead()) === undefined) {
       await workspace.commitAndPush(
-        new Map(init.initFiles),
-        init.initMessage,
+        new Map(input.initFiles),
+        input.initMessage,
       );
     }
 
-    const commitQueue = new SerialCommitQueue();
+    let commitQueue: Promise<unknown> = Promise.resolve();
     return {
-      repo: name,
-      branch: init.branch,
+      repo: input.repoName,
+      branch: input.branch,
       readHead: () => workspace.readHead(),
       readFile: (path) => workspace.readFile(path),
-      commitFiles: (input) =>
-        commitQueue.run(() => workspace.commitAndPush(input.files, input.message)),
+      commitFiles(commit) {
+        const next = commitQueue.then(() => workspace.commitAndPush(commit.files, commit.message));
+        commitQueue = next.catch(() => undefined);
+        return next;
+      },
     };
   }
 
@@ -263,7 +254,7 @@ function createIsomorphicGitWorkspaceFactory(): GitWorkspaceFactory {
         async commitAndPush(
           files: ReadonlyMap<string, Uint8Array>,
           message: string,
-        ): Promise<CommittedRecord> {
+        ): Promise<CommitResult> {
           const parent = await readHead();
           try {
             for (const [path, bytes] of files) {
@@ -291,7 +282,7 @@ function createIsomorphicGitWorkspaceFactory(): GitWorkspaceFactory {
           } catch (error) {
             throw new CapsuleError(
               "SIDE_EFFECT_STORAGE_FAILED",
-              `Committing/pushing capsule files to the Artifacts remote failed: ${safeErrorMessage(error)}. ` +
+              `Committing/pushing call-history records to the Artifacts remote failed: ${safeErrorMessage(error)}. ` +
                 `Previously pushed commits are intact. This is usually transient (token expiry or a ` +
                 `concurrent push); the step can be retried safely.`,
               { cause: error },

@@ -13,7 +13,6 @@ export type {
   ExternalCallRunContext,
   ExternalCallSpec,
   ExternalCallSummaryContext,
-  ProviderSummary,
   ReconcileContext,
   ReconcileResult,
   StandardSchemaV1,

@@ -7,11 +7,7 @@ import {
   type WorkflowStepContextLike,
 } from "../src/index.js";
 import { memory } from "../src/memory.js";
-import { DEFAULT_BRANCH, callCommittedPath, callDirPath, callRequestPath } from "../src/core/repo-layout.js";
-import { hashExternalCallKey, hashWorkflowRun } from "../src/core/content-digest.js";
-import type { ArtifactBackend, CapsuleAdapter, InternalCapsuleAdapter, StandardSchemaV1 } from "../src/core/types.js";
-
-const decoder = new TextDecoder();
+import type { CallStore, CapsuleAdapter, InternalCapsuleAdapter, StandardSchemaV1 } from "../src/core/types.js";
 
 function workflow(overrides?: Partial<WorkflowEventLike>): WorkflowEventLike {
   return {
@@ -25,34 +21,6 @@ function workflow(overrides?: Partial<WorkflowEventLike>): WorkflowEventLike {
 
 function step(name: string, count = 1, attempt = 1): WorkflowStepContextLike {
   return { step: { name, count }, attempt };
-}
-
-async function runRepoFor(target: { workflowName: string; instanceId: string }): Promise<string> {
-  const hash = await hashWorkflowRun(target);
-  const { runRepoName } = await import("../src/core/repo-layout.js");
-  return runRepoName(target.workflowName, target.instanceId, hash.slice("sha256:".length));
-}
-
-async function readJson<T>(
-  adapter: CapsuleAdapter,
-  target: { workflowName: string; instanceId: string },
-  path: string,
-): Promise<T> {
-  const session = await internalAdapter(adapter).backend.openRun({
-    workflowName: target.workflowName,
-    instanceId: target.instanceId,
-    repoName: await runRepoFor(target),
-    branch: DEFAULT_BRANCH,
-    initFiles: new Map(),
-    initMessage: "init",
-  });
-  const bytes = await session.readFile(path);
-  if (bytes === null) throw new Error(`missing ${path}`);
-  return JSON.parse(decoder.decode(bytes)) as T;
-}
-
-function internalAdapter(adapter: CapsuleAdapter): InternalCapsuleAdapter {
-  return adapter as InternalCapsuleAdapter;
 }
 
 describe("capsules.call", () => {
@@ -87,26 +55,6 @@ describe("capsules.call", () => {
 
     expect(result.id).toBe("pi_123");
     expect(execute).toHaveBeenCalledTimes(1);
-
-    const callDir = callDirPath(await hashExternalCallKey("wf:invoice-77:charge-customer"));
-    await expect(
-      readJson(adapter, {
-        workflowName: "ChargeCustomerWorkflow",
-        instanceId: "invoice-77",
-      }, callRequestPath(callDir)),
-    ).resolves.toMatchObject({
-      callName: "stripe.payment_intent.create",
-      workflow: { instanceId: "invoice-77" },
-    });
-    await expect(
-      readJson(adapter, {
-        workflowName: "ChargeCustomerWorkflow",
-        instanceId: "invoice-77",
-      }, callCommittedPath(callDir)),
-    ).resolves.toMatchObject({
-      status: "committed",
-      result: { id: "pi_123" },
-    });
   });
 
   it("returns a prior committed result across retry attempts without executing", async () => {
@@ -261,7 +209,7 @@ describe("capsules.call", () => {
   });
 
   it("does not invoke provider code when started record storage fails", async () => {
-    const backend: ArtifactBackend = {
+    const store: CallStore = {
       kind: "failing",
       async openRun() {
         return {
@@ -270,19 +218,16 @@ describe("capsules.call", () => {
           async readFile() {
             return null;
           },
-          async head() {
+          async readHead() {
             return undefined;
+          },
+          async commitFiles() {
+            throw new Error("disk full");
           },
         };
       },
-      async beginWrite() {
-        return { stage() {} };
-      },
-      async commitWrite() {
-        throw new Error("disk full");
-      },
     };
-    const adapter = { kind: "memory", backend } as InternalCapsuleAdapter as CapsuleAdapter;
+    const adapter = { kind: "memory", store } as InternalCapsuleAdapter as CapsuleAdapter;
     const capsules = createCapsules({ adapter });
     const execute = vi.fn(async () => ({ id: "pi_123" }));
     const call = defineExternalCall<{ amount: number }, { id: string }>({

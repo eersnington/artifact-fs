@@ -1,6 +1,5 @@
-import { createRepositoryBackend } from "./repositories/backend.js";
 import {
-  cloudflareRepositoryStore,
+  cloudflareCallStore,
   type ArtifactsBindingLike,
   type CloudflareRepositoryStoreOptions,
 } from "./repositories/cloudflare-artifacts.js";
@@ -19,7 +18,7 @@ export function cloudflare(
 ): CloudflareAdapter {
   return {
     kind: "cloudflare",
-    backend: createRepositoryBackend(cloudflareRepositoryStore(binding, options)),
+    store: cloudflareCallStore(binding, options),
   } as InternalCapsuleAdapter as CloudflareAdapter;
 }
 

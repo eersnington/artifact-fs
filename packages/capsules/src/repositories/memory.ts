@@ -1,118 +1,56 @@
-import type { CommittedRecord } from "../core/types.js";
-import { digestFileContent, sha256Hex } from "../core/content-digest.js";
-import {
-  SerialCommitQueue,
-  type RepositorySession,
-  type RepositoryStore,
-} from "./backend.js";
-
-/**
- * In-memory artifact store for tests, examples, and deterministic unit runs.
- * Models the same semantics as the Git-backed stores: immutable commits,
- * parent links, and per-path introduction tracking for precise resolveStep.
- */
-
-type MemoryCommit = {
-  readonly sha: string;
-  readonly parent?: string;
-  readonly message: string;
-  readonly tree: ReadonlyMap<string, Uint8Array>;
-  readonly changedPaths: ReadonlySet<string>;
-};
+import type { CallStore, CallStoreRun, CommitResult } from "../core/types.js";
 
 type MemoryRepo = {
-  readonly name: string;
   readonly branch: string;
-  readonly commits: MemoryCommit[];
-  readonly commitQueue: SerialCommitQueue;
+  readonly files: Map<string, Uint8Array>;
+  commitNumber: number;
+  queue: Promise<unknown>;
 };
 
-export type MemoryStore = RepositoryStore & {
-  /** Test/debug access to raw repos. */
-  repos(): ReadonlyMap<string, ReadonlyArray<MemoryCommit>>;
-};
-
-export function memoryRepositoryStore(): MemoryStore {
-  const repositories = new Map<string, MemoryRepo>();
+export function memoryCallStore(): CallStore {
+  const repos = new Map<string, MemoryRepo>();
 
   return {
     kind: "memory",
 
-    repos() {
-      return new Map([...repositories].map(([name, repo]) => [name, repo.commits]));
-    },
-
-    async openRepository(name, init) {
-      let repo = repositories.get(name);
+    async openRun(input): Promise<CallStoreRun> {
+      let repo = repos.get(input.repoName);
       if (repo === undefined) {
         repo = {
-          name,
-          branch: init.branch,
-          commits: [],
-          commitQueue: new SerialCommitQueue(),
+          branch: input.branch,
+          files: new Map(input.initFiles),
+          commitNumber: 1,
+          queue: Promise.resolve(),
         };
-        repositories.set(name, repo);
-        await commitMemoryFiles(repo, init.initFiles, init.initMessage);
+        repos.set(input.repoName, repo);
       }
-      return createMemoryRepositorySession(repo);
+
+      return {
+        repo: input.repoName,
+        branch: repo.branch,
+        async readHead() {
+          return sha(repo!.commitNumber);
+        },
+        async readFile(path) {
+          return repo!.files.get(path) ?? null;
+        },
+        commitFiles(commit) {
+          const next = repo!.queue.then(async (): Promise<CommitResult> => {
+            const parent = sha(repo!.commitNumber);
+            for (const [path, bytes] of commit.files) {
+              repo!.files.set(path, bytes);
+            }
+            repo!.commitNumber += 1;
+            return { commit: sha(repo!.commitNumber), parent };
+          });
+          repo!.queue = next.catch(() => undefined);
+          return next;
+        },
+      };
     },
   };
 }
 
-function createMemoryRepositorySession(repo: MemoryRepo): RepositorySession {
-  return {
-    repo: repo.name,
-    branch: repo.branch,
-
-    async readHead() {
-      return repo.commits.at(-1)?.sha;
-    },
-
-    async readFile(path) {
-      const head = repo.commits.at(-1);
-      return head?.tree.get(path) ?? null;
-    },
-
-    commitFiles(input) {
-      return repo.commitQueue.run(() =>
-        commitMemoryFiles(repo, input.files, input.message),
-      );
-    },
-  };
-}
-
-async function commitMemoryFiles(
-  repo: MemoryRepo,
-  files: ReadonlyMap<string, Uint8Array>,
-  message: string,
-): Promise<CommittedRecord> {
-  const parent = repo.commits.at(-1);
-  const tree = new Map(parent?.tree ?? []);
-  for (const [path, bytes] of files) {
-    tree.set(path, bytes);
-  }
-  const digests: Array<[string, string]> = [];
-  for (const [path, bytes] of [...files].sort(([a], [b]) =>
-    a.localeCompare(b),
-  )) {
-    digests.push([path, await digestFileContent(bytes)]);
-  }
-  const sha = (
-    await sha256Hex(
-      new TextEncoder().encode(
-        JSON.stringify({ parent: parent?.sha ?? null, message, digests }),
-      ),
-    )
-  ).slice(0, 40);
-  repo.commits.push({
-    sha,
-    ...(parent !== undefined ? { parent: parent.sha } : {}),
-    message,
-    tree,
-    changedPaths: new Set(files.keys()),
-  });
-  return {
-    commit: sha,
-    ...(parent !== undefined ? { parent: parent.sha } : {}),
-  };
+function sha(commitNumber: number): string {
+  return String(commitNumber).padStart(40, "0");
 }

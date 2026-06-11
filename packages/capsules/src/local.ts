@@ -1,5 +1,4 @@
-import { createRepositoryBackend } from "./repositories/backend.js";
-import { localRepositoryStore } from "./repositories/local-node.js";
+import { localCallStore } from "./repositories/local-node.js";
 import type { InternalCapsuleAdapter, LocalAdapter } from "./core/types.js";
 
 export type LocalOptions = {
@@ -20,11 +19,9 @@ export type LocalOptions = {
 export function local(options: LocalOptions): LocalAdapter {
   return {
     kind: "local",
-    backend: createRepositoryBackend(
-      localRepositoryStore({
-        mountRoot: options.root,
-        ...(options.author !== undefined ? { author: options.author } : {}),
-      }),
-    ),
+    store: localCallStore({
+      mountRoot: options.root,
+      ...(options.author !== undefined ? { author: options.author } : {}),
+    }),
   } as InternalCapsuleAdapter as LocalAdapter;
 }
