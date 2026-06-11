@@ -165,7 +165,7 @@ type ExternalCallRecovery<Request, Result> =
 For each call key, Capsules stores compact JSON records:
 
 ```txt
-.calls/
+.capsule/
   run.json
   by-key/<key-hash>/
     request.json

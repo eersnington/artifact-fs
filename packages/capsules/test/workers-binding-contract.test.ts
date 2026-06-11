@@ -67,7 +67,7 @@ describe("Cloudflare adapter", () => {
     });
     expect(opened[0]?.remote).toContain("https://example.com/capsule-ResearchWorkflow-research-001.git");
     expect(JSON.stringify(result)).not.toContain("secret");
-    expect(await workspace.readFile(".calls/run.json")).not.toBeNull();
+    expect(await workspace.readFile(".capsule/run.json")).not.toBeNull();
   });
 });
 

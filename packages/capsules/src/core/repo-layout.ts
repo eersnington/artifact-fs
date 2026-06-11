@@ -2,14 +2,14 @@ import { slugify } from "./validation.js";
 
 /** Canonical run-repo layout for external call history records. */
 
-export const RUN_JSON_PATH = ".calls/run.json";
+export const RUN_JSON_PATH = ".capsule/run.json";
 export const DEFAULT_BRANCH = "main";
 export const INIT_COMMIT_MESSAGE = "capsules: init workflow run";
 
 const MAX_REPO_NAME_LENGTH = 100;
 
 export function callDirPath(keyHash: string): string {
-  return `.calls/by-key/${keyHashToPathSegment(keyHash)}`;
+  return `.capsule/by-key/${keyHashToPathSegment(keyHash)}`;
 }
 
 export function callRequestPath(callDir: string): string {

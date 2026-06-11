@@ -71,7 +71,7 @@ describe("remote HTTP adapter", () => {
       branch: "main",
       message: "capsules: init workflow run",
     });
-    expect(openMetadata.files).toEqual([{ path: ".calls/run.json", part: "file-0" }]);
+    expect(openMetadata.files).toEqual([{ path: ".capsule/run.json", part: "file-0" }]);
 
     const commitRequests = requests.filter((request) => request.path.endsWith("/commit"));
     expect(commitRequests).toHaveLength(2);

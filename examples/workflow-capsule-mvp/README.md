@@ -16,12 +16,12 @@ invoiceId
 Capsules stores compact call records in Artifacts:
 
 ```txt
-.calls/run.json
-.calls/by-key/<key-hash>/request.json
-.calls/by-key/<key-hash>/started.json
-.calls/by-key/<key-hash>/committed.json
-.calls/by-key/<key-hash>/summary.json
-.calls/by-key/<key-hash>/attempts/001-started.json
+.capsule/run.json
+.capsule/by-key/<key-hash>/request.json
+.capsule/by-key/<key-hash>/started.json
+.capsule/by-key/<key-hash>/committed.json
+.capsule/by-key/<key-hash>/summary.json
+.capsule/by-key/<key-hash>/attempts/001-started.json
 ```
 
 Workflows owns execution and retry config. Capsules tracks the external side-effect boundary inside the step.
