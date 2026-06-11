@@ -1,6 +1,7 @@
 {
   "name": "artifact-fs-sandbox",
   "main": "src/index.ts",
+  "account_id":"24de2a617a6739ba3ae9eea152a254a5",
   "compatibility_date": "2026-06-11",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
