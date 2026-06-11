@@ -157,6 +157,8 @@ export function createCapsules(options: CreateCapsulesOptions): Capsules {
         ...(summary === undefined ? {} : { summary }),
         committedAt: new Date().toISOString(),
       };
+      const externalId = committedRecord.summary?.externalId;
+      const status = committedRecord.summary?.status;
       await commitFiles(
         run,
         new Map([
@@ -165,7 +167,13 @@ export function createCapsules(options: CreateCapsulesOptions): Capsules {
             encoder.encode(JSON.stringify(committedRecord, null, 2) + "\n"),
           ],
         ]),
-        `capsules: ${identity.callName} attempt ${context.step.attempt} ${resultStatus}`,
+        `capsules: ${identity.callName} attempt ${context.step.attempt} ${committedRecord.status}\n\n` +
+          `Workflow: ${identity.workflowName}\n` +
+          `Instance: ${identity.instanceId}\n` +
+          `Step: ${context.step.step.name} #${context.step.step.count}` +
+          (externalId === undefined ? "" : `\nExternal-Id: ${String(externalId)}`) +
+          (status === undefined ? "" : `\nStatus: ${String(status)}`) +
+          `\nRecord: committed.json`,
         `Provider code for external call "${identity.callName}" returned, but Capsules could not persist the result record. ` +
           `A retry must use the configured recovery policy; prior records remain intact.`,
         false,
@@ -202,7 +210,10 @@ async function openRun(
           ),
         ],
       ]),
-      initMessage: "capsules: init workflow run",
+      initMessage: `capsules: init workflow run\n\n` +
+        `Workflow: ${identity.workflowName}\n` +
+        `Instance: ${identity.instanceId}\n` +
+        `Record: ${RUN_JSON_PATH}`,
     });
   } catch (cause) {
     if (cause instanceof CapsuleError) throw cause;
@@ -256,7 +267,11 @@ async function recordStarted<Request>(
   await commitFiles(
     run,
     files,
-    `capsules: ${identity.callName} attempt ${context.step.attempt} started`,
+    `capsules: ${identity.callName} attempt ${context.step.attempt} started\n\n` +
+      `Workflow: ${identity.workflowName}\n` +
+      `Instance: ${identity.instanceId}\n` +
+      `Step: ${context.step.step.name} #${context.step.step.count}\n` +
+      `Record: attempts/${String(context.step.attempt).padStart(3, "0")}-started.json`,
     `Could not persist the started record for external call "${identity.callName}". ` +
       `Provider code was not invoked; retry after fixing call-history storage.`,
   );
@@ -270,7 +285,11 @@ async function recordProviderError<Request>(
 ): Promise<void> {
   try {
     await run.commitFiles({
-      message: `capsules: ${identity.callName} attempt ${context.step.attempt} error`,
+      message: `capsules: ${identity.callName} attempt ${context.step.attempt} error\n\n` +
+        `Workflow: ${identity.workflowName}\n` +
+        `Instance: ${identity.instanceId}\n` +
+        `Step: ${context.step.step.name} #${context.step.step.count}\n` +
+        `Record: attempts/${String(context.step.attempt).padStart(3, "0")}-error.json`,
       files: new Map([
         [
           identity.paths.attemptError,
