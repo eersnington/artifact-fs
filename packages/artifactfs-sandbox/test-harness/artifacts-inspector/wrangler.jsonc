@@ -1,0 +1,11 @@
+{
+  "name": "artifact-fs-artifacts-inspector",
+  "main": "index.ts",
+  "compatibility_date": "2026-06-11",
+  "artifacts": [
+    {
+      "binding": "ARTIFACTS",
+      "namespace": "default"
+    }
+  ]
+}
