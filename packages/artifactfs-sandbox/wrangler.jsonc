@@ -8,7 +8,7 @@
   },
   "containers": [
     {
-      "class_name": "Artifacts Sandbox",
+      "class_name": "ArtifactsSandbox",
       "image": "./Dockerfile",
       "image_build_context": "../../",
       "instance_type": "basic",
@@ -18,14 +18,14 @@
   "durable_objects": {
     "bindings": [
       {
-        "class_name": "Artifacts Sandbox",
+        "class_name": "ArtifactsSandbox",
         "name": "ARTIFACTS_SANDBOX"
       }
     ]
   },
   "migrations": [
     {
-      "new_sqlite_classes": ["Sandbox"],
+      "new_sqlite_classes": ["ArtifactsSandbox"],
       "tag": "v1"
     }
   ]

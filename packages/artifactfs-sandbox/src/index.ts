@@ -1,9 +1,9 @@
-import { getSandbox } from "@cloudflare/sandbox";
+import { getSandbox, Sandbox } from "@cloudflare/sandbox";
 
-export { Sandbox } from "@cloudflare/sandbox";
+export class ArtifactsSandbox extends Sandbox {}
 
 type Env = {
-  ARTIFACTS_SANDBOX: DurableObjectNamespace<import("@cloudflare/sandbox").Sandbox>;
+  ARTIFACTS_SANDBOX: DurableObjectNamespace<ArtifactsSandbox>;
   ARTIFACTS_SANDBOX_API_TOKEN?: string;
 };
 
