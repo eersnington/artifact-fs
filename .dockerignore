@@ -12,3 +12,7 @@
 !examples/cloudflare-sandbox-sdk
 !examples/cloudflare-sandbox-sdk/container_src
 !examples/cloudflare-sandbox-sdk/container_src/**
+!packages
+!packages/artifactfs-sandbox
+!packages/artifactfs-sandbox/container_src
+!packages/artifactfs-sandbox/container_src/**
