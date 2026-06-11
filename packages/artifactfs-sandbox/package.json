@@ -1,0 +1,20 @@
+{
+  "name": "@artifact-fs/sandbox",
+  "version": "0.0.0",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@11.0.8",
+  "description": "Cloudflare Sandbox-hosted ArtifactFS service.",
+  "scripts": {
+    "deploy": "pnpx wrangler deploy",
+    "dev": "pnpx wrangler dev",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@cloudflare/sandbox": "0.8.1"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^4.20260606.1",
+    "typescript": "^6.0.3"
+  }
+}
