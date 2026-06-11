@@ -2,20 +2,23 @@
 
 Idempotency records for external side effects inside Cloudflare Workflows.
 
-Workflows retries failed `step.do()` callbacks and caches successful step output. Capsules does not replace that. Capsules records one external provider call inside a retryable step so retries can reuse a committed provider result, reject a changed request for the same key, or stop for reconciliation when the outcome is unknown.
+Workflows already retries failed `step.do()` callbacks and caches successful step output. Capsules adds what is missing for one external provider call inside a retryable step:
 
-Capsules does not provide exactly-once execution. Provider safety still depends on provider idempotency keys, reconciliation APIs, durable markers, or choosing to fail closed.
+- reuse the committed provider result on retry
+- reject a changed request for the same key
+- stop for reconciliation when the outcome is unknown
+
+Capsules does not provide exactly-once execution. Provider safety still depends on provider idempotency keys, reconciliation, or failing closed.
 
 ## Install
 
 ```sh
 npm i workflow-capsules
-pnpm add workflow-capsules
 ```
 
-## Usage
+## Quick Start
 
-Define the provider operation once, then call it inside native `step.do()`.
+Define the provider call once, then run it inside a native `step.do()`.
 
 ```ts
 import { createCapsules, defineExternalCall } from "workflow-capsules";
@@ -39,21 +42,15 @@ const createPaymentIntent = defineExternalCall<ChargeInput, PaymentIntent>({
       }),
     });
 
-    const body = (await response.json()) as PaymentIntent;
     if (!response.ok) throw new Error(`Stripe failed with HTTP ${response.status}`);
+    const body = (await response.json()) as PaymentIntent;
     return { id: body.id, status: body.status };
   },
-  summary: ({ request, result }) => ({
-    externalId: result.id,
-    status: result.status,
-    amount: request.amount,
-    currency: request.currency,
-  }),
 });
 
 const capsules = createCapsules({ adapter: cloudflare(env.ARTIFACTS) });
 
-const charge = await step.do("charge customer", async (ctx) => {
+await step.do("charge customer", async (ctx) => {
   const intent = await capsules.call(createPaymentIntent, {
     workflow: event,
     step: ctx,
@@ -65,19 +62,61 @@ const charge = await step.do("charge customer", async (ctx) => {
 });
 ```
 
-`capsules.call(...)` returns the provider result, not a Capsules wrapper.
+`capsules.call(...)` returns the provider result directly, not a wrapper.
 
-## Requirements
+## Rules
 
-The `key` is required. It must identify one external side effect and must be stable across retries. Do not include attempt number, time, randomness, or changing request data in the key.
+1. `key` identifies exactly one external side effect and must be stable across retries. Never include attempt numbers, timestamps, or randomness.
+2. `request` and `result` must be JSON-serializable. The request digest uses `JSON.stringify`, so build request objects deterministically.
+3. Return expected provider outcomes as values so they are stored and reused. Throw only for infrastructure or unexpected failures.
+4. Redact secrets. Capsules stores exactly what `execute` and `summary` return.
 
-The `request` and provider `result` must be JSON-serializable. Capsules compares the serialized request digest for conflict detection, so build request objects deterministically.
+## Retry Behavior
 
-Return expected provider business outcomes as values when they should be stored and reused. Throw only for infrastructure or unexpected failures.
+What happens when a step retries `capsules.call(...)` with the same key:
 
-Redact secrets before returning provider results or summaries. Capsules stores exactly what `execute` returns and exactly what `summary` returns.
+| State from the previous attempt              | Behavior                                            |
+| -------------------------------------------- | --------------------------------------------------- |
+| Result committed, same request digest        | Returns the stored result; `execute` does not run   |
+| Result committed, different request digest   | Throws `SIDE_EFFECT_CONFLICT`; `execute` does not run |
+| Attempt started, no result recorded          | Follows the `recovery` policy                       |
+| No record                                    | Runs `execute` normally                             |
 
-## Recovery
+Other failure cases:
+
+- Storage fails before the started record is persisted: Capsules throws and `execute` does not run.
+- `execute` succeeds but the result cannot be persisted: Capsules throws `SIDE_EFFECT_STORAGE_FAILED`; the next retry follows the recovery policy.
+- `execute` throws: Capsules records the attempt error when possible and rethrows the original error, leaving Workflows retry config in charge.
+
+## API
+
+### `createCapsules(options): Capsules`
+
+| Option    | Type             | Description                              |
+| --------- | ---------------- | ---------------------------------------- |
+| `adapter` | `CapsuleAdapter` | Storage adapter. See [Adapters](#adapters). |
+
+### `defineExternalCall<Request, Result>(spec): ExternalCall<Request, Result>`
+
+| Field      | Type                                              | Required | Description |
+| ---------- | ------------------------------------------------- | -------- | ----------- |
+| `name`     | `string`                                          | yes      | Stable identifier for the provider operation, e.g. `"stripe.payment_intent.create"`. |
+| `recovery` | `ExternalCallRecovery`                            | yes      | What to do when a previous attempt started but recorded no result. See [Recovery](#recovery). |
+| `execute`  | `(ctx) => Promise<Result>`                        | yes      | Performs the provider call. Receives `{ request, key, workflow, step, attempt }`. |
+| `request`  | Standard Schema                                   | no       | Validates the request before any record is written. |
+| `result`   | Standard Schema                                   | no       | Validates the result before it is stored. |
+| `summary`  | `(ctx) => Record<string, unknown>`                | no       | Compact audit fields stored with the result. Receives the execute context plus `result`. |
+
+### `capsules.call(externalCall, context): Promise<Result>`
+
+| Field      | Type                      | Description |
+| ---------- | ------------------------- | ----------- |
+| `workflow` | `WorkflowEvent`-like      | The Workflow event; provides `instanceId` and `workflowName`. |
+| `step`     | `WorkflowStepContext`-like | The `step.do()` callback context. |
+| `key`      | `string`                  | Stable idempotency key for this side effect. |
+| `request`  | `Request`                 | The provider request payload. |
+
+### Recovery
 
 ```ts
 type ExternalCallRecovery<Request, Result> =
@@ -86,58 +125,27 @@ type ExternalCallRecovery<Request, Result> =
   | { reconcile: (ctx: ReconcileContext<Request>) => Promise<ReconcileResult<Result>> };
 ```
 
-`idempotent-call` repeats `execute` with the same key and same serialized request after a previous attempt started but did not record a result. Use this only when the provider enforces idempotency for that key, such as Stripe `Idempotency-Key`.
+| Policy             | Behavior |
+| ------------------ | -------- |
+| `"idempotent-call"` | Repeats `execute` with the same key and request. Only safe when the provider enforces idempotency for that key, such as Stripe `Idempotency-Key`. |
+| `"fail-closed"`     | Throws `SIDE_EFFECT_AMBIGUOUS` instead of repeating the provider call. |
+| `{ reconcile }`     | Looks up provider state (external ID, marker, webhook state). `{ status: "found", result }` stores and returns the result. `not_found` and `inconclusive` throw `SIDE_EFFECT_AMBIGUOUS`; absence is not treated as safe to retry. |
 
-`reconcile` reads provider state using a marker, external ID, webhook state, or application-owned lookup. `found` stores and returns the result. `not_found` and `inconclusive` throw `SIDE_EFFECT_AMBIGUOUS`; absence is not treated as safe to retry.
+### Errors
 
-`fail-closed` throws `SIDE_EFFECT_AMBIGUOUS` before repeating the provider call.
+All failures are `CapsuleError` with a `code`:
 
-## Stored Records
+| Code                          | Meaning |
+| ----------------------------- | ------- |
+| `INVALID_EXTERNAL_CALL`       | Bad spec or call input, including schema validation failures. |
+| `SIDE_EFFECT_CONFLICT`        | Same key reused with a different request digest. |
+| `SIDE_EFFECT_AMBIGUOUS`       | Outcome unknown and the policy refuses to repeat the call. |
+| `SIDE_EFFECT_STORAGE_FAILED`  | The result could not be persisted after `execute` succeeded. |
+| `SIDE_EFFECT_RECONCILE_FAILED` | The `reconcile` function itself threw. |
 
-For each key, Capsules stores compact JSON records:
+Convert `SIDE_EFFECT_AMBIGUOUS` to Cloudflare `NonRetryableError` when the Workflow should stop for operator reconciliation.
 
-```txt
-.capsule/
-  run.json
-  by-key/<key-hash>/
-    request.json
-    committed.json
-    attempts/
-      001-started.json
-      001-error.json
-```
-
-`committed.json` stores the provider result. If `summary` is configured, it is stored there too. Reconciled results are stored in the same file with `status: "reconciled"`.
-
-Storage is an implementation detail. The Workflow should return its normal domain output.
-
-## Failure Semantics
-
-If a committed result exists for the same key and serialized request digest, Capsules returns it without running `execute`.
-
-If the same key is reused with a different serialized request digest, Capsules throws `SIDE_EFFECT_CONFLICT` before running `execute`.
-
-If storage fails before the started record is persisted, Capsules throws and `execute` is not run.
-
-If `execute` returns but the committed record cannot be persisted, Capsules throws `SIDE_EFFECT_STORAGE_FAILED`. The next retry follows the configured recovery policy.
-
-If `execute` throws, Capsules keeps the started record, writes an attempt error when possible, and rethrows the original error so Workflows retry config remains in charge.
-
-## Errors
-
-Capsules raises `CapsuleError` with these codes:
-
-```txt
-INVALID_EXTERNAL_CALL
-SIDE_EFFECT_CONFLICT
-SIDE_EFFECT_AMBIGUOUS
-SIDE_EFFECT_STORAGE_FAILED
-SIDE_EFFECT_RECONCILE_FAILED
-```
-
-Convert `SIDE_EFFECT_AMBIGUOUS` to Cloudflare `NonRetryableError` when the Workflow should stop and require operator reconciliation.
-
-## Adapters
+### Adapters
 
 ```ts
 import { cloudflare } from "workflow-capsules/cloudflare";
@@ -145,31 +153,20 @@ import { memory } from "workflow-capsules/memory";
 import { local } from "workflow-capsules/local";
 import { remote } from "workflow-capsules/remote";
 
-createCapsules({ adapter: cloudflare(env.ARTIFACTS) });
-createCapsules({ adapter: memory() });
-createCapsules({ adapter: local({ root: "/tmp/capsules" }) });
-createCapsules({ adapter: remote({ url, token }) });
+createCapsules({ adapter: cloudflare(env.ARTIFACTS) }); // production on Cloudflare
+createCapsules({ adapter: memory() });                  // unit tests, ephemeral
+createCapsules({ adapter: local({ root: "/tmp/capsules" }) }); // development, Node-only
+createCapsules({ adapter: remote({ url, token }) });    // hosted record store
 ```
 
-Use `memory` for tests, `local` for development, `cloudflare` for Cloudflare-native production storage, and `remote` for a hosted record store.
+## Stored Records
 
-## Do Not Use Capsules For
+Per key, Capsules stores compact JSON records: the request digest, one started/error record per attempt, and `committed.json` holding the result, the optional summary, and `status: "committed" | "reconciled"`. Storage is an implementation detail; your Workflow returns its normal domain output.
 
-Use plain `step.do()` for read-only or harmlessly repeatable work.
+## When Not to Use Capsules
 
-Use the provider idempotency key directly when you do not need stored records, request conflict checks, or ambiguous-outcome handling.
-
-Use R2 for files and large blobs.
-
-Use Workflows rollback for compensation after a later step fails.
-
-Use `waitForEvent` for webhook-driven progression.
-
-## Development
-
-```sh
-pnpm install
-pnpm typecheck
-pnpm test
-pnpm build
-```
+- Read-only or harmlessly repeatable work: plain `step.do()`.
+- Provider idempotency key alone is enough: call the provider directly.
+- Files and large blobs: R2.
+- Compensation after a later step fails: Workflows rollback.
+- Webhook-driven progression: `waitForEvent`.
