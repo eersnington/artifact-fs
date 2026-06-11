@@ -9,6 +9,31 @@ set -euo pipefail
 : "${ARTIFACT_FS_DAEMON_LOG:=/tmp/artifact-fs-daemon.log}"
 : "${ARTIFACT_FS_DAEMON_PID_FILE:=/tmp/artifact-fs-daemon.pid}"
 
+configure_git_credentials() {
+  if [ -z "${MOUNT_GIT_USERNAME:-}" ] && [ -z "${MOUNT_GIT_PASSWORD:-}" ]; then
+    return 0
+  fi
+
+  if [ -z "${MOUNT_GIT_USERNAME:-}" ] || [ -z "${MOUNT_GIT_PASSWORD:-}" ]; then
+    echo "artifact-fs: MOUNT_GIT_USERNAME and MOUNT_GIT_PASSWORD must be provided together" >&2
+    exit 1
+  fi
+
+  if [[ "$MOUNT_GIT_USERNAME" == *$'\n'* || "$MOUNT_GIT_USERNAME" == *$'\r'* || "$MOUNT_GIT_PASSWORD" == *$'\n'* || "$MOUNT_GIT_PASSWORD" == *$'\r'* ]]; then
+    echo "artifact-fs: Git credentials must not contain newlines" >&2
+    exit 1
+  fi
+
+  local payload
+  payload="username=${MOUNT_GIT_USERNAME}"$'\n'"password=${MOUNT_GIT_PASSWORD}"
+  payload="${payload//\'/\'\\\'\'}"
+
+  export GIT_TERMINAL_PROMPT=0
+  export GIT_CONFIG_COUNT=1
+  export GIT_CONFIG_KEY_0=credential.helper
+  export GIT_CONFIG_VALUE_0="!f() { printf '%s\n' '${payload}'; }; f"
+}
+
 validate_remote() {
   local remote="$1"
 
@@ -156,6 +181,7 @@ fi
 
 validate_remote "$MOUNT_GIT_REMOTE"
 validate_branch "$MOUNT_GIT_BRANCH"
+configure_git_credentials
 
 REPO_NAME=$(infer_repo_name "$MOUNT_GIT_REMOTE")
 MOUNT_PATH="${MOUNT_ROOT}/${REPO_NAME}"

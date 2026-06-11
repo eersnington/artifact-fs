@@ -11,6 +11,8 @@ type MountRequest = {
   readonly sandboxId?: string;
   readonly remote?: string;
   readonly branch?: string;
+  readonly gitUsername?: string;
+  readonly gitPassword?: string;
 };
 
 type MountConfig = {
@@ -19,6 +21,8 @@ type MountConfig = {
   readonly branch: string;
   readonly repoName: string;
   readonly mountPath: string;
+  readonly gitUsername?: string;
+  readonly gitPassword?: string;
   readonly env: Record<string, string>;
 };
 
@@ -71,7 +75,13 @@ async function handleMount(request: Request, env: Env): Promise<Response> {
   try {
     authorizeRequest(request, env);
     const body = await parseMountRequest(request);
-    const config = buildMountConfig(body.sandboxId, body.remote, body.branch);
+    const config = buildMountConfig(
+      body.sandboxId,
+      body.remote,
+      body.branch,
+      body.gitUsername,
+      body.gitPassword,
+    );
     const sandbox = getSandbox(env.ARTIFACTS_SANDBOX, config.sandboxId, {
       normalizeId: true,
       sleepAfter: "15m",
@@ -187,10 +197,12 @@ async function parseMountRequest(request: Request): Promise<MountRequest> {
     throw new UserError("Request body must be a JSON object", 400);
   }
 
-  const { sandboxId, remote, branch } = body as Record<string, unknown>;
+  const { sandboxId, remote, branch, gitUsername, gitPassword } = body as Record<string, unknown>;
   validateOptionalString("sandboxId", sandboxId);
   validateOptionalString("remote", remote);
   validateOptionalString("branch", branch);
+  validateOptionalString("gitUsername", gitUsername);
+  validateOptionalString("gitPassword", gitPassword);
 
   if (remote === undefined) {
     throw new UserError("remote is required", 400);
@@ -200,6 +212,8 @@ async function parseMountRequest(request: Request): Promise<MountRequest> {
     sandboxId: sandboxId as string | undefined,
     remote: remote as string,
     branch: branch as string | undefined,
+    gitUsername: gitUsername as string | undefined,
+    gitPassword: gitPassword as string | undefined,
   };
 }
 
@@ -207,9 +221,14 @@ function buildMountConfig(
   sandboxIdInput: string | undefined,
   remoteInput: string | undefined,
   branchInput: string | undefined,
+  gitUsernameInput: string | undefined,
+  gitPasswordInput: string | undefined,
 ): MountConfig {
   const remote = normalizeRemote(remoteInput ?? "");
   const branch = (branchInput ?? DEFAULT_BRANCH).trim() || DEFAULT_BRANCH;
+  const gitUsername = gitUsernameInput?.trim();
+  const gitPassword = gitPasswordInput?.trim();
+  validateGitCredentials(gitUsername, gitPassword);
   validateBranch(branch);
   const repoName = inferRepoName(remote);
   const sandboxId = sandboxIdInput === undefined
@@ -223,13 +242,17 @@ function buildMountConfig(
     branch,
     repoName,
     mountPath,
-    env: {
+    ...(gitUsername === undefined ? {} : { gitUsername }),
+    ...(gitPassword === undefined ? {} : { gitPassword }),
+    env: removeUndefinedValues({
       MOUNT_GIT_REMOTE: remote,
       MOUNT_GIT_BRANCH: branch,
+      MOUNT_GIT_USERNAME: gitUsername,
+      MOUNT_GIT_PASSWORD: gitPassword,
       ARTIFACT_FS_ROOT: DEFAULT_ARTIFACT_FS_ROOT,
       MOUNT_ROOT: DEFAULT_MOUNT_ROOT,
       ARTIFACT_FS_MOUNT_METADATA_FILE: DEFAULT_METADATA_FILE,
-    },
+    }),
   };
 }
 
@@ -437,6 +460,29 @@ function validateOptionalString(name: string, value: unknown): void {
   }
 }
 
+function validateGitCredentials(username: string | undefined, password: string | undefined): void {
+  if ((username === undefined) !== (password === undefined)) {
+    throw new UserError("gitUsername and gitPassword must be provided together", 400);
+  }
+  if (username === "" || password === "") {
+    throw new UserError("gitUsername and gitPassword must not be empty", 400);
+  }
+  if (username !== undefined && /[\r\n]/.test(username)) {
+    throw new UserError("gitUsername must not contain newlines", 400);
+  }
+  if (password !== undefined && /[\r\n]/.test(password)) {
+    throw new UserError("gitPassword must not contain newlines", 400);
+  }
+}
+
+function removeUndefinedValues(input: Record<string, string | undefined>): Record<string, string> {
+  const output: Record<string, string> = {};
+  for (const [key, value] of Object.entries(input)) {
+    if (value !== undefined) output[key] = value;
+  }
+  return output;
+}
+
 function validateBranch(branch: string): void {
   const invalidBase =
     branch === "" ||
@@ -513,7 +559,7 @@ function helpText(): string {
   return [
     "ArtifactFS Cloudflare Sandbox service",
     "",
-    "POST /mount  { sandboxId, remote, branch? }",
+    "POST /mount  { sandboxId, remote, branch?, gitUsername?, gitPassword? }",
     "GET  /status?sandboxId=<id>",
     "GET  /tree?sandboxId=<id>&path=<repo-relative-dir>",
     "GET  /file?sandboxId=<id>&path=<repo-relative-file>",

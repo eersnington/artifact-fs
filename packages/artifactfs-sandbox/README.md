@@ -24,6 +24,18 @@ curl -X POST https://<worker>/mount \
   -d '{"sandboxId":"demo","remote":"https://github.com/cloudflare/artifact-fs.git","branch":"main"}'
 ```
 
+For private Git remotes, pass credentials separately:
+
+```json
+{
+  "sandboxId": "run",
+  "remote": "https://example.com/org/repo.git",
+  "branch": "main",
+  "gitUsername": "x",
+  "gitPassword": "<token>"
+}
+```
+
 ### Inspect
 
 ```sh
@@ -39,7 +51,7 @@ curl -H 'authorization: Bearer <token>' \
 
 ## Limits
 
-- Accepts public HTTPS and SSH Git remotes.
+- Accepts HTTPS and SSH Git remotes.
 - Rejects credentials in remote URLs.
 - Exposes status, directory listing, and text file reads.
 - Container disk is ephemeral across stop/restart.
