@@ -132,7 +132,7 @@ export function localCallStore(options: LocalNodeOptions): CallStore {
           if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
           throw new CapsuleError(
             "SIDE_EFFECT_STORAGE_FAILED",
-            `Could not read ${repoPath} from local capsule repo ${repositoryDir}: ${String(cause)}. ` +
+            `Could not read ${repoPath} from local call-history repo ${repositoryDir}: ${String(cause)}. ` +
               `Committed history is intact; check local filesystem permissions and retry.`,
             { cause },
           );
@@ -145,9 +145,9 @@ export function localCallStore(options: LocalNodeOptions): CallStore {
           await writeWorkingTreeFiles(commit.files);
           await runGit("add", "-A", "--", ...commit.files.keys());
           await runGit("commit", "-m", commit.message);
-          const commit = await runGit("rev-parse", "HEAD");
+          const commitSha = await runGit("rev-parse", "HEAD");
           return {
-            commit,
+            commit: commitSha,
             ...(parent !== undefined ? { parent } : {}),
           };
         });

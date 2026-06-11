@@ -330,7 +330,11 @@ async function identifyCall<Request>(
     const repoHash = [...new Uint8Array(repoDigest)]
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
-    repoName = `capsule-${workflow.slice(0, 44)}-${instance.slice(0, 44)}-${repoHash.slice(0, 8)}`;
+    const suffix = repoHash.slice(0, 8);
+    const budget = 100 - "capsule-".length - suffix.length - 2;
+    const workflowBudget = Math.ceil(budget / 2);
+    const instanceBudget = budget - workflowBudget;
+    repoName = `capsule-${workflow.slice(0, workflowBudget)}-${instance.slice(0, instanceBudget)}-${suffix}`;
   }
   const keySegment = keyHash.slice("sha256:".length);
   const basePath = `.capsule/by-key/${keySegment}`;
