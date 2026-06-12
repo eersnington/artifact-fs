@@ -2,7 +2,7 @@
  * Worker-compatible in-memory filesystem for isomorphic-git, based on the
  * Cloudflare Artifacts isomorphic-git example. Provides the `fs.promises`
  * surface isomorphic-git requires; symlinks are not supported because
- * capsule trees never contain them.
+ * Stepdaddy trees never contain them.
  */
 
 type Entry =
