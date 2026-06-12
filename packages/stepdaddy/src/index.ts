@@ -1,12 +1,12 @@
 export {
-  createCapsules,
+  createStepdaddy,
   defineExternalCall,
-  type CreateCapsulesOptions,
-} from "./core/capsules.js";
-export { CapsuleError, type CapsuleErrorCode } from "./core/errors.js";
+  type CreateStepdaddyOptions,
+} from "./core/stepdaddy.js";
+export { StepdaddyError, type StepdaddyErrorCode } from "./core/errors.js";
 
 export type {
-  Capsules,
+  Stepdaddy,
   ExternalCall,
   ExternalCallExecuteContext,
   ExternalCallRecovery,

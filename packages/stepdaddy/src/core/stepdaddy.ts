@@ -1,5 +1,5 @@
 import {
-  CapsuleError,
+  StepdaddyError,
   invalidExternalCall,
   reconcileFailed,
   sideEffectAmbiguous,
@@ -10,13 +10,13 @@ import type {
   CallIdentity,
   CallRequestRecord,
   CallStoreRun,
-  CapsuleAdapter,
-  Capsules,
+  Stepdaddy,
+  StepdaddyAdapter,
   CommittedCallRecord,
   ExternalCall,
   ExternalCallRunContext,
   ExternalCallSpec,
-  InternalCapsuleAdapter,
+  InternalStepdaddyAdapter,
   ReconcileResult,
   StandardSchemaV1,
 } from "./types.js";
@@ -24,11 +24,11 @@ import type {
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 const BRANCH = "main";
-const RUN_JSON_PATH = ".capsule/run.json";
+const RUN_JSON_PATH = ".stepd/run.json";
 const NAME_PATTERN = /^[a-z0-9][a-z0-9._-]{0,99}$/;
 
-export type CreateCapsulesOptions = {
-  readonly adapter: CapsuleAdapter;
+export type CreateStepdaddyOptions = {
+  readonly adapter: StepdaddyAdapter;
 };
 
 export function defineExternalCall<Request, Result>(
@@ -38,8 +38,8 @@ export function defineExternalCall<Request, Result>(
   return spec;
 }
 
-export function createCapsules(options: CreateCapsulesOptions): Capsules {
-  const store = (options.adapter as InternalCapsuleAdapter).store;
+export function createStepdaddy(options: CreateStepdaddyOptions): Stepdaddy {
+  const store = (options.adapter as InternalStepdaddyAdapter).store;
 
   return {
     async call<Request, Result>(
@@ -167,14 +167,14 @@ export function createCapsules(options: CreateCapsulesOptions): Capsules {
             encoder.encode(JSON.stringify(committedRecord, null, 2) + "\n"),
           ],
         ]),
-        `capsules: ${identity.callName} attempt ${context.step.attempt} ${committedRecord.status}\n\n` +
+        `stepdaddy: ${identity.callName} attempt ${context.step.attempt} ${committedRecord.status}\n\n` +
           `Workflow: ${identity.workflowName}\n` +
           `Instance: ${identity.instanceId}\n` +
           `Step: ${context.step.step.name} #${context.step.step.count}` +
           (externalId === undefined ? "" : `\nExternal-Id: ${String(externalId)}`) +
           (status === undefined ? "" : `\nStatus: ${String(status)}`) +
           `\nRecord: committed.json`,
-        `Provider code for external call "${identity.callName}" returned, but Capsules could not persist the result record. ` +
+        `Provider code for external call "${identity.callName}" returned, but Stepdaddy could not persist the result record. ` +
           `A retry must use the configured recovery policy; prior records remain intact.`,
         false,
       );
@@ -184,7 +184,7 @@ export function createCapsules(options: CreateCapsulesOptions): Capsules {
 }
 
 async function openRun(
-  store: InternalCapsuleAdapter["store"],
+  store: InternalStepdaddyAdapter["store"],
   identity: CallIdentity,
 ): Promise<CallStoreRun> {
   try {
@@ -210,13 +210,13 @@ async function openRun(
           ),
         ],
       ]),
-      initMessage: `capsules: init workflow run\n\n` +
+      initMessage: `stepdaddy: init workflow run\n\n` +
         `Workflow: ${identity.workflowName}\n` +
         `Instance: ${identity.instanceId}\n` +
         `Record: ${RUN_JSON_PATH}`,
     });
   } catch (cause) {
-    if (cause instanceof CapsuleError) throw cause;
+    if (cause instanceof StepdaddyError) throw cause;
     throw storageFailed(
       `Could not open call-history storage for workflow "${identity.workflowName}" instance ` +
         `"${identity.instanceId}". Provider code was not invoked; retry after fixing storage access.`,
@@ -267,7 +267,7 @@ async function recordStarted<Request>(
   await commitFiles(
     run,
     files,
-    `capsules: ${identity.callName} attempt ${context.step.attempt} started\n\n` +
+    `stepdaddy: ${identity.callName} attempt ${context.step.attempt} started\n\n` +
       `Workflow: ${identity.workflowName}\n` +
       `Instance: ${identity.instanceId}\n` +
       `Step: ${context.step.step.name} #${context.step.step.count}\n` +
@@ -285,7 +285,7 @@ async function recordProviderError<Request>(
 ): Promise<void> {
   try {
     await run.commitFiles({
-      message: `capsules: ${identity.callName} attempt ${context.step.attempt} error\n\n` +
+      message: `stepdaddy: ${identity.callName} attempt ${context.step.attempt} error\n\n` +
         `Workflow: ${identity.workflowName}\n` +
         `Instance: ${identity.instanceId}\n` +
         `Step: ${context.step.step.name} #${context.step.step.count}\n` +
@@ -336,7 +336,7 @@ async function identifyCall<Request>(
 
   const workflow = context.workflow.workflowName.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^[-]+|[-]+$/g, "") || "run";
   const instance = context.workflow.instanceId.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^[-]+|[-]+$/g, "") || "run";
-  const fullRepoName = `capsule-${workflow}-${instance}`;
+  const fullRepoName = `stepdaddy-${workflow}-${instance}`;
   let repoName = fullRepoName;
   if (repoName.length > 100) {
     const repoDigest = await crypto.subtle.digest(
@@ -350,13 +350,13 @@ async function identifyCall<Request>(
       .map((byte) => byte.toString(16).padStart(2, "0"))
       .join("");
     const suffix = repoHash.slice(0, 8);
-    const budget = 100 - "capsule-".length - suffix.length - 2;
+    const budget = 100 - "stepdaddy-".length - suffix.length - 2;
     const workflowBudget = Math.ceil(budget / 2);
     const instanceBudget = budget - workflowBudget;
-    repoName = `capsule-${workflow.slice(0, workflowBudget)}-${instance.slice(0, instanceBudget)}-${suffix}`;
+    repoName = `stepdaddy-${workflow.slice(0, workflowBudget)}-${instance.slice(0, instanceBudget)}-${suffix}`;
   }
   const keySegment = keyHash.slice("sha256:".length);
-  const basePath = `.capsule/by-key/${keySegment}`;
+  const basePath = `.stepd/by-key/${keySegment}`;
   const attempt = String(context.step.attempt).padStart(3, "0");
 
   return {
@@ -385,7 +385,7 @@ async function commitFiles(
   try {
     await run.commitFiles({ files, message });
   } catch (cause) {
-    if (cause instanceof CapsuleError) throw cause;
+    if (cause instanceof StepdaddyError) throw cause;
     throw storageFailed(failureMessage, cause, { retryable });
   }
 }
@@ -412,19 +412,19 @@ function assertExternalCall<Request, Result>(spec: ExternalCallSpec<Request, Res
 
 function assertRunContext<Request>(context: ExternalCallRunContext<Request>): void {
   if (typeof context.workflow?.workflowName !== "string" || context.workflow.workflowName.length === 0) {
-    throw invalidExternalCall("capsules.call(...) requires workflow.workflowName. Pass the WorkflowEvent received by run().");
+    throw invalidExternalCall("stepdaddy.call(...) requires workflow.workflowName. Pass the WorkflowEvent received by run().");
   }
   if (typeof context.workflow.instanceId !== "string" || context.workflow.instanceId.length === 0) {
-    throw invalidExternalCall("capsules.call(...) requires workflow.instanceId. Pass the WorkflowEvent received by run().");
+    throw invalidExternalCall("stepdaddy.call(...) requires workflow.instanceId. Pass the WorkflowEvent received by run().");
   }
   if (typeof context.step?.step?.name !== "string" || context.step.step.name.length === 0) {
-    throw invalidExternalCall("capsules.call(...) requires step.step.name. Pass the WorkflowStepContext from step.do().");
+    throw invalidExternalCall("stepdaddy.call(...) requires step.step.name. Pass the WorkflowStepContext from step.do().");
   }
   if (typeof context.step.step.count !== "number" || typeof context.step.attempt !== "number") {
-    throw invalidExternalCall("capsules.call(...) requires step.step.count and step.attempt. Pass the WorkflowStepContext from step.do().");
+    throw invalidExternalCall("stepdaddy.call(...) requires step.step.count and step.attempt. Pass the WorkflowStepContext from step.do().");
   }
   if (typeof context.key !== "string" || context.key.length === 0) {
-    throw invalidExternalCall("capsules.call(...) requires a non-empty stable external side-effect key. Provider code was not invoked.");
+    throw invalidExternalCall("stepdaddy.call(...) requires a non-empty stable external side-effect key. Provider code was not invoked.");
   }
 }
 

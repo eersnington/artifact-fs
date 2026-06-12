@@ -3,7 +3,7 @@ import {
   type ArtifactsBindingLike,
   type CloudflareRepositoryStoreOptions,
 } from "./repositories/cloudflare-artifacts.js";
-import type { CloudflareAdapter, InternalCapsuleAdapter } from "./core/types.js";
+import type { CloudflareAdapter, InternalStepdaddyAdapter } from "./core/types.js";
 
 /**
  * Create the Cloudflare Artifacts adapter for production Workers/Workflows.
@@ -19,7 +19,7 @@ export function cloudflare(
   return {
     kind: "cloudflare",
     store: cloudflareCallStore(binding, options),
-  } as InternalCapsuleAdapter as CloudflareAdapter;
+  } as InternalStepdaddyAdapter as CloudflareAdapter;
 }
 
 export type { ArtifactsBindingLike, CloudflareRepositoryStoreOptions };

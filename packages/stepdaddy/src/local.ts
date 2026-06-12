@@ -1,10 +1,10 @@
 import { localCallStore } from "./repositories/local-node.js";
-import type { InternalCapsuleAdapter, LocalAdapter } from "./core/types.js";
+import type { InternalStepdaddyAdapter, LocalAdapter } from "./core/types.js";
 
 export type LocalOptions = {
   /** Directory that holds one persistent call-history Git repo per Workflow run. */
   readonly root: string;
-  /** Commit author. Defaults to workflow-capsules. */
+  /** Commit author. Defaults to stepdaddy. */
   readonly author?: { readonly name: string; readonly email: string };
 };
 
@@ -23,5 +23,5 @@ export function local(options: LocalOptions): LocalAdapter {
       mountRoot: options.root,
       ...(options.author !== undefined ? { author: options.author } : {}),
     }),
-  } as InternalCapsuleAdapter as LocalAdapter;
+  } as InternalStepdaddyAdapter as LocalAdapter;
 }

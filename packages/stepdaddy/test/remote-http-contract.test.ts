@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { createCapsules, defineExternalCall } from "../src/index.js";
+import { createStepdaddy, defineExternalCall } from "../src/index.js";
 import { remote } from "../src/remote.js";
 
 describe("remote HTTP adapter", () => {
@@ -42,7 +42,7 @@ describe("remote HTTP adapter", () => {
       }
       return new Response("unexpected route", { status: 500 });
     };
-    const capsules = createCapsules({
+    const stepdaddy = createStepdaddy({
       adapter: remote({
         url: "https://remote.example",
         token: "secret-token",
@@ -55,7 +55,7 @@ describe("remote HTTP adapter", () => {
       execute: async () => ({ id: "pi_123" }),
     });
 
-    const result = await capsules.call(call, {
+    const result = await stepdaddy.call(call, {
       workflow: { workflowName: "BinaryWorkflow", instanceId: "binary-1" },
       step: { step: { name: "charge customer", count: 1 }, attempt: 1 },
       key: "wf:binary-1:charge-customer",
@@ -70,7 +70,7 @@ describe("remote HTTP adapter", () => {
       protocolVersion: 1,
       branch: "main",
     });
-    expect(openMetadata.files).toEqual([{ path: ".capsule/run.json", part: "file-0" }]);
+    expect(openMetadata.files).toEqual([{ path: ".stepd/run.json", part: "file-0" }]);
 
     const commitRequests = requests.filter((request) => request.path.endsWith("/commit"));
     expect(commitRequests).toHaveLength(2);

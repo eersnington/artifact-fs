@@ -1,5 +1,5 @@
 import { memoryCallStore } from "./repositories/memory.js";
-import type { InternalCapsuleAdapter, MemoryAdapter } from "./core/types.js";
+import type { InternalStepdaddyAdapter, MemoryAdapter } from "./core/types.js";
 
 /**
  * Create an ephemeral in-process adapter for unit tests and deterministic
@@ -13,5 +13,5 @@ export function memory(): MemoryAdapter {
   return {
     kind: "memory",
     store: memoryCallStore(),
-  } as InternalCapsuleAdapter as MemoryAdapter;
+  } as InternalStepdaddyAdapter as MemoryAdapter;
 }

@@ -1,4 +1,4 @@
-import { CapsuleError } from "../core/errors.js";
+import { StepdaddyError } from "../core/errors.js";
 import type { CallStore, CallStoreRun, CommitResult } from "../core/types.js";
 
 /**
@@ -60,7 +60,7 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): CallStore {
       }
       response = await fetchRemote(`${baseUrl}${route}`, requestOptions);
     } catch (error) {
-      throw new CapsuleError(
+      throw new StepdaddyError(
         "SIDE_EFFECT_STORAGE_FAILED",
         `Could not reach the remote call-history service at ${baseUrl} (${method} ${route}): ` +
           `${error instanceof Error ? error.message : String(error)}. No commit was made. ` +
@@ -77,7 +77,7 @@ export function remoteHttpStore(options: RemoteHttpStoreOptions): CallStore {
   ): Promise<void> => {
     if (response.ok) return;
     const text = await response.text().catch(() => "");
-    throw new CapsuleError(
+    throw new StepdaddyError(
       "SIDE_EFFECT_STORAGE_FAILED",
       `Remote call-history service rejected ${operation} with HTTP ${response.status}` +
         (text !== "" ? `: ${text.slice(0, 500)}` : ".") +
@@ -153,7 +153,7 @@ function buildMultipartBody(
   for (const { path, part } of metadata.files) {
     const bytes = files.get(path);
     if (bytes === undefined) {
-      throw new CapsuleError(
+      throw new StepdaddyError(
         "INVALID_EXTERNAL_CALL",
         `Remote multipart request metadata referenced ${path}, but no bytes were staged for that path. ` +
           `No request was sent; retry after rebuilding the staged file set.`,

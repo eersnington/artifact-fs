@@ -1,12 +1,12 @@
 import { describe, expect, it, vi } from "vitest";
 import {
-  CapsuleError,
-  createCapsules,
+  StepdaddyError,
+  createStepdaddy,
   defineExternalCall,
   type WorkflowEventLike,
   type WorkflowStepContextLike,
 } from "../src/index.js";
-import type { CallStore, CapsuleAdapter, InternalCapsuleAdapter } from "../src/core/types.js";
+import type { CallStore, InternalStepdaddyAdapter, StepdaddyAdapter } from "../src/core/types.js";
 
 function workflow(overrides?: Partial<WorkflowEventLike>): WorkflowEventLike {
   return {
@@ -22,10 +22,10 @@ function step(name: string, count = 1, attempt = 1): WorkflowStepContextLike {
   return { step: { name, count }, attempt };
 }
 
-describe("capsules.call", () => {
+describe("stepdaddy.call", () => {
   it("stores request metadata and a full committed result without storing raw request data", async () => {
     const { adapter, files } = capturingAdapter();
-    const capsules = createCapsules({ adapter });
+    const stepdaddy = createStepdaddy({ adapter });
     const execute = vi.fn(async () => ({
       id: "pi_123",
       object: "payment_intent" as const,
@@ -45,7 +45,7 @@ describe("capsules.call", () => {
       }),
     });
 
-    await capsules.call(call, {
+    await stepdaddy.call(call, {
       workflow: workflow(),
       step: step("charge customer"),
       key: "wf:invoice-77:charge-customer",
@@ -77,7 +77,7 @@ describe("capsules.call", () => {
   });
 
   it("returns a prior committed result across retry attempts without executing", async () => {
-    const capsules = createCapsules({ adapter: capturingAdapter().adapter });
+    const stepdaddy = createStepdaddy({ adapter: capturingAdapter().adapter });
     const execute = vi.fn(async () => ({ id: "pi_123" }));
     const call = defineExternalCall<{ amount: number }, { id: string }>({
       name: "stripe.payment_intent.create",
@@ -85,13 +85,13 @@ describe("capsules.call", () => {
       execute,
     });
 
-    const first = await capsules.call(call, {
+    const first = await stepdaddy.call(call, {
       workflow: workflow(),
       step: step("charge customer", 1, 1),
       key: "wf:invoice-77:charge-customer",
       request: { amount: 1200 },
     });
-    const second = await capsules.call(call, {
+    const second = await stepdaddy.call(call, {
       workflow: workflow(),
       step: step("charge customer", 1, 2),
       key: "wf:invoice-77:charge-customer",
@@ -104,7 +104,7 @@ describe("capsules.call", () => {
   });
 
   it("rejects the same key with a different request before executing provider code", async () => {
-    const capsules = createCapsules({ adapter: capturingAdapter().adapter });
+    const stepdaddy = createStepdaddy({ adapter: capturingAdapter().adapter });
     const execute = vi.fn(async () => ({ id: "pi_123" }));
     const call = defineExternalCall<{ amount: number }, { id: string }>({
       name: "stripe.payment_intent.create",
@@ -112,7 +112,7 @@ describe("capsules.call", () => {
       execute,
     });
 
-    await capsules.call(call, {
+    await stepdaddy.call(call, {
       workflow: workflow(),
       step: step("charge customer"),
       key: "wf:invoice-77:charge-customer",
@@ -120,7 +120,7 @@ describe("capsules.call", () => {
     });
 
     await expect(
-      capsules.call(call, {
+      stepdaddy.call(call, {
         workflow: workflow(),
         step: step("charge customer", 1, 2),
         key: "wf:invoice-77:charge-customer",
@@ -129,13 +129,13 @@ describe("capsules.call", () => {
     ).rejects.toMatchObject({
       code: "SIDE_EFFECT_CONFLICT",
       retryable: false,
-    } satisfies Partial<CapsuleError>);
+    } satisfies Partial<StepdaddyError>);
     expect(execute).toHaveBeenCalledTimes(1);
   });
 
   it("fails closed after a started record without a committed result", async () => {
     const { adapter, files } = capturingAdapter();
-    const capsules = createCapsules({ adapter });
+    const stepdaddy = createStepdaddy({ adapter });
     const execute = vi.fn(async () => {
       throw new Error("provider timeout");
     });
@@ -146,7 +146,7 @@ describe("capsules.call", () => {
     });
 
     await expect(
-      capsules.call(call, {
+      stepdaddy.call(call, {
         workflow: workflow(),
         step: step("create issue", 1, 1),
         key: "issue-marker-1",
@@ -155,7 +155,7 @@ describe("capsules.call", () => {
     ).rejects.toThrow("provider timeout");
 
     await expect(
-      capsules.call(call, {
+      stepdaddy.call(call, {
         workflow: workflow(),
         step: step("create issue", 1, 2),
         key: "issue-marker-1",
@@ -175,7 +175,7 @@ describe("capsules.call", () => {
 
   it("uses reconcile to convert started/error data into a reconciled committed record", async () => {
     const { adapter, files } = capturingAdapter();
-    const capsules = createCapsules({ adapter });
+    const stepdaddy = createStepdaddy({ adapter });
     const execute = vi.fn(async () => {
       throw new Error("network died after provider accepted request");
     });
@@ -190,7 +190,7 @@ describe("capsules.call", () => {
     });
 
     await expect(
-      capsules.call(call, {
+      stepdaddy.call(call, {
         workflow: workflow(),
         step: step("create issue", 1, 1),
         key: "issue-marker-1",
@@ -199,7 +199,7 @@ describe("capsules.call", () => {
     ).rejects.toThrow("network died");
 
     await expect(
-      capsules.call(call, {
+      stepdaddy.call(call, {
         workflow: workflow(),
         step: step("create issue", 1, 2),
         key: "issue-marker-1",
@@ -221,7 +221,7 @@ describe("capsules.call", () => {
   });
 });
 
-function capturingAdapter(): { adapter: CapsuleAdapter; files: Map<string, Uint8Array> } {
+function capturingAdapter(): { adapter: StepdaddyAdapter; files: Map<string, Uint8Array> } {
   const files = new Map<string, Uint8Array>();
   let initialized = false;
   let commitNumber = 0;
@@ -253,7 +253,7 @@ function capturingAdapter(): { adapter: CapsuleAdapter; files: Map<string, Uint8
       };
     },
   };
-  return { adapter: { kind: "memory", store } as InternalCapsuleAdapter as CapsuleAdapter, files };
+  return { adapter: { kind: "memory", store } as InternalStepdaddyAdapter as StepdaddyAdapter, files };
 }
 
 function readJson(files: Map<string, Uint8Array>, suffix: string): Record<string, unknown> {

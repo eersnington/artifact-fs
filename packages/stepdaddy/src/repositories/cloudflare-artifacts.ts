@@ -1,4 +1,4 @@
-import { CapsuleError, invalidExternalCall } from "../core/errors.js";
+import { StepdaddyError, invalidExternalCall } from "../core/errors.js";
 import type { CallStore, CallStoreRun, CommitResult, OpenRunInput } from "../core/types.js";
 import { MemoryFS } from "./isomorphic-git-memory-fs.js";
 
@@ -44,7 +44,7 @@ export type CloudflareRepositoryStoreOptions = {
   readonly remoteFor?: (repoName: string) => string;
   /** Write-token TTL in seconds. Defaults to 900. */
   readonly tokenTtlSeconds?: number;
-  /** Commit author. Defaults to workflow-capsules. */
+  /** Commit author. Defaults to stepdaddy. */
   readonly author?: { readonly name: string; readonly email: string };
   /** @internal Test seam; defaults to the isomorphic-git engine. */
   readonly gitWorkspaceFactory?: GitWorkspaceFactory;
@@ -76,8 +76,8 @@ export type PushableGitWorkspace = {
 };
 
 const DEFAULT_AUTHOR = {
-  name: "workflow-capsules",
-  email: "capsules@workflow.invalid",
+  name: "stepdaddy",
+  email: "stepdaddy@workflow.invalid",
 };
 
 export function cloudflareCallStore(
@@ -150,7 +150,7 @@ export function cloudflareCallStore(
       if (remote === undefined) {
         throw invalidExternalCall(
           `Artifacts repo "${name}" exists but the binding handle did not expose a remote URL. ` +
-          `Pass cloudflare(binding, { remoteFor: (repo) => url }) so Capsules can push to it.`,
+          `Pass cloudflare(binding, { remoteFor: (repo) => url }) so Stepdaddy can push to it.`,
         );
       }
       const token = await handle.createToken("write", ttl);
@@ -160,7 +160,7 @@ export function cloudflareCallStore(
         isNew: false,
       };
     } catch (error) {
-      if (error instanceof CapsuleError) throw error;
+      if (error instanceof StepdaddyError) throw error;
       getError = error;
     }
 
@@ -172,7 +172,7 @@ export function cloudflareCallStore(
         isNew: true,
       };
     } catch (createError) {
-      throw new CapsuleError(
+      throw new StepdaddyError(
         "SIDE_EFFECT_STORAGE_FAILED",
         `Could not open Artifacts repo "${name}": get() failed (${safeErrorMessage(getError)}) ` +
           `and create() failed (${safeErrorMessage(createError)}). No commit was made. ` +
@@ -220,7 +220,7 @@ function createIsomorphicGitWorkspaceFactory(): GitWorkspaceFactory {
             onAuth,
           });
         } catch (error) {
-          throw new CapsuleError(
+          throw new StepdaddyError(
             "SIDE_EFFECT_STORAGE_FAILED",
             `Cloning Artifacts repo from its remote failed: ${safeErrorMessage(error)}. ` +
               `No commit was made. The repo may still be initializing; retry the step.`,
@@ -280,7 +280,7 @@ function createIsomorphicGitWorkspaceFactory(): GitWorkspaceFactory {
               ...(parent !== undefined ? { parent } : {}),
             };
           } catch (error) {
-            throw new CapsuleError(
+            throw new StepdaddyError(
               "SIDE_EFFECT_STORAGE_FAILED",
               `Committing/pushing call-history records to the Artifacts remote failed: ${safeErrorMessage(error)}. ` +
                 `Previously pushed commits are intact. This is usually transient (token expiry or a ` +

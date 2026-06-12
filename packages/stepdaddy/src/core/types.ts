@@ -81,7 +81,7 @@ export type ExternalCallRunContext<Request> = {
   readonly request: Request;
 };
 
-export type Capsules = {
+export type Stepdaddy = {
   call<Request, Result>(
     externalCall: ExternalCall<Request, Result>,
     context: ExternalCallRunContext<Request>,
@@ -136,18 +136,18 @@ export type CallStore = {
 };
 
 /** Public adapter handle. Construct via an adapter subpath module. */
-export type CapsuleAdapter = {
+export type StepdaddyAdapter = {
   readonly kind: string;
 };
 
-export type InternalCapsuleAdapter = CapsuleAdapter & {
+export type InternalStepdaddyAdapter = StepdaddyAdapter & {
   readonly store: CallStore;
 };
 
-export type CloudflareAdapter = CapsuleAdapter & { readonly kind: "cloudflare" };
-export type MemoryAdapter = CapsuleAdapter & { readonly kind: "memory" };
-export type LocalAdapter = CapsuleAdapter & { readonly kind: "local" };
-export type RemoteAdapter = CapsuleAdapter & { readonly kind: "remote" };
+export type CloudflareAdapter = StepdaddyAdapter & { readonly kind: "cloudflare" };
+export type MemoryAdapter = StepdaddyAdapter & { readonly kind: "memory" };
+export type LocalAdapter = StepdaddyAdapter & { readonly kind: "local" };
+export type RemoteAdapter = StepdaddyAdapter & { readonly kind: "remote" };
 
 export type CallRequestRecord = {
   readonly schemaVersion: 1;

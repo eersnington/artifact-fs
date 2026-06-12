@@ -1,4 +1,4 @@
-import { CapsuleError } from "../core/errors.js";
+import { StepdaddyError } from "../core/errors.js";
 import type { CallStore, CallStoreRun, CommitResult, OpenRunInput } from "../core/types.js";
 
 /**
@@ -7,7 +7,7 @@ import type { CallStore, CallStoreRun, CommitResult, OpenRunInput } from "../cor
  * local adapter for Node scripts, tests, and CLIs.
  *
  * The root can be a normal directory or a directory you later serve/inspect
- * with ArtifactFS (`artifact-fs daemon`); Capsule does not manage the
+ * with ArtifactFS (`artifact-fs daemon`); Stepdaddy does not manage the
  * ArtifactFS daemon lifecycle itself.
  *
  * Node-only: imports `node:` modules lazily so the package entry stays
@@ -16,13 +16,13 @@ import type { CallStore, CallStoreRun, CommitResult, OpenRunInput } from "../cor
 export type LocalNodeOptions = {
   /** Directory that holds one call-history Git repo per Workflow run. */
   readonly mountRoot: string;
-  /** Commit author. Defaults to workflow-capsules. */
+  /** Commit author. Defaults to stepdaddy. */
   readonly author?: { readonly name: string; readonly email: string };
 };
 
 const DEFAULT_AUTHOR = {
-  name: "workflow-capsules",
-  email: "capsules@workflow.invalid",
+  name: "stepdaddy",
+  email: "stepdaddy@workflow.invalid",
 };
 
 export function localCallStore(options: LocalNodeOptions): CallStore {
@@ -74,7 +74,7 @@ export function localCallStore(options: LocalNodeOptions): CallStore {
           error !== null && typeof error === "object" && "stderr" in error
             ? String((error as { stderr: unknown }).stderr).trim()
             : "";
-        throw new CapsuleError(
+        throw new StepdaddyError(
           "SIDE_EFFECT_STORAGE_FAILED",
           `git ${args[0]} failed in ${repositoryDir}: ${stderr || String(error)}. ` +
             `Committed history is intact; fix the repository state and retry the step.`,
@@ -130,7 +130,7 @@ export function localCallStore(options: LocalNodeOptions): CallStore {
           return new Uint8Array(data);
         } catch (cause) {
           if ((cause as NodeJS.ErrnoException).code === "ENOENT") return null;
-          throw new CapsuleError(
+          throw new StepdaddyError(
             "SIDE_EFFECT_STORAGE_FAILED",
             `Could not read ${repoPath} from local call-history repo ${repositoryDir}: ${String(cause)}. ` +
               `Committed history is intact; check local filesystem permissions and retry.`,

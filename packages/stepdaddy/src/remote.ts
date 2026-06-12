@@ -1,5 +1,5 @@
 import { remoteHttpStore, type RemoteHttpStoreOptions } from "./repositories/remote-http.js";
-import type { InternalCapsuleAdapter, RemoteAdapter } from "./core/types.js";
+import type { InternalStepdaddyAdapter, RemoteAdapter } from "./core/types.js";
 
 export type RemoteOptions = RemoteHttpStoreOptions;
 
@@ -14,5 +14,5 @@ export function remote(options: RemoteOptions): RemoteAdapter {
   return {
     kind: "remote",
     store: remoteHttpStore(options),
-  } as InternalCapsuleAdapter as RemoteAdapter;
+  } as InternalStepdaddyAdapter as RemoteAdapter;
 }
