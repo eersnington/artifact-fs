@@ -1,5 +1,5 @@
-import { createCapsules, defineExternalCall } from "../../capsules/dist/index.js";
-import { local } from "../../capsules/dist/local.js";
+import { createStepdaddy, defineExternalCall } from "../../stepdaddy/dist/index.js";
+import { local } from "../../stepdaddy/dist/local.js";
 import { mkdir, rm, writeFile } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -37,7 +37,7 @@ async function idempotentReplayWorkflow() {
   await resetRepo(repoName);
 
   let providerExecutions = 0;
-  const capsules = createCapsules({ adapter: local({ root: outputRoot }) });
+  const stepdaddy = createStepdaddy({ adapter: local({ root: outputRoot }) });
   const call = defineExternalCall({
     name: "stripe.payment_intent.create",
     recovery: "idempotent-call",
@@ -63,11 +63,11 @@ async function idempotentReplayWorkflow() {
     key: `wf:${instanceId}:charge-customer`,
     request: { amount: 1200 },
   };
-  const first = await capsules.call(call, {
+  const first = await stepdaddy.call(call, {
     ...context,
     step: step("charge customer", 1, 1),
   });
-  const second = await capsules.call(call, {
+  const second = await stepdaddy.call(call, {
     ...context,
     step: step("charge customer", 1, 2),
   });
@@ -93,7 +93,7 @@ async function requestConflictWorkflow() {
 
   let providerExecutions = 0;
   let conflictCode;
-  const capsules = createCapsules({ adapter: local({ root: outputRoot }) });
+  const stepdaddy = createStepdaddy({ adapter: local({ root: outputRoot }) });
   const call = defineExternalCall({
     name: "stripe.payment_intent.create",
     recovery: "idempotent-call",
@@ -114,7 +114,7 @@ async function requestConflictWorkflow() {
   });
 
   const workflow = { workflowName, instanceId };
-  await capsules.call(call, {
+  await stepdaddy.call(call, {
     workflow,
     step: step("charge customer", 1, 1),
     key: `wf:${instanceId}:charge-customer`,
@@ -122,7 +122,7 @@ async function requestConflictWorkflow() {
   });
 
   try {
-    await capsules.call(call, {
+    await stepdaddy.call(call, {
       workflow,
       step: step("charge customer", 1, 2),
       key: `wf:${instanceId}:charge-customer`,
@@ -152,7 +152,7 @@ async function reconcileRecoveryWorkflow() {
   let providerExecutions = 0;
   let reconcileExecutions = 0;
   let firstError;
-  const capsules = createCapsules({ adapter: local({ root: outputRoot }) });
+  const stepdaddy = createStepdaddy({ adapter: local({ root: outputRoot }) });
   const call = defineExternalCall({
     name: "github.issue.create",
     recovery: {
@@ -182,11 +182,11 @@ async function reconcileRecoveryWorkflow() {
     request: { title: "bug" },
   };
   try {
-    await capsules.call(call, { ...input, step: step("create issue", 1, 1) });
+    await stepdaddy.call(call, { ...input, step: step("create issue", 1, 1) });
   } catch (error) {
     firstError = error?.message ?? String(error);
   }
-  const recovered = await capsules.call(call, { ...input, step: step("create issue", 1, 2) });
+  const recovered = await stepdaddy.call(call, { ...input, step: step("create issue", 1, 2) });
 
   return {
     behaviour: "reconcile recovery",
@@ -210,7 +210,7 @@ async function failClosedWorkflow() {
   let providerExecutions = 0;
   let firstError;
   let secondErrorCode;
-  const capsules = createCapsules({ adapter: local({ root: outputRoot }) });
+  const stepdaddy = createStepdaddy({ adapter: local({ root: outputRoot }) });
   const call = defineExternalCall({
     name: "github.issue.create",
     recovery: "fail-closed",
@@ -227,12 +227,12 @@ async function failClosedWorkflow() {
     request: { title: "bug" },
   };
   try {
-    await capsules.call(call, { ...input, step: step("create issue", 1, 1) });
+    await stepdaddy.call(call, { ...input, step: step("create issue", 1, 1) });
   } catch (error) {
     firstError = error?.message ?? String(error);
   }
   try {
-    await capsules.call(call, { ...input, step: step("create issue", 1, 2) });
+    await stepdaddy.call(call, { ...input, step: step("create issue", 1, 2) });
   } catch (error) {
     secondErrorCode = error?.code ?? error?.name ?? "Error";
   }
@@ -254,7 +254,7 @@ function step(name, count, attempt) {
 }
 
 function repoNameFor(workflowName, instanceId) {
-  return `capsule-${workflowName}-${instanceId}`;
+  return `stepdaddy-${workflowName}-${instanceId}`;
 }
 
 async function resetRepo(repoName) {

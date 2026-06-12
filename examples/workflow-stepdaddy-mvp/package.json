@@ -1,17 +1,17 @@
 {
-  "name": "@cloudflare/artifact-fs-workflow-capsule-mvp",
+  "name": "@cloudflare/artifact-fs-workflow-stepdaddy-mvp",
   "version": "0.0.0",
   "private": true,
   "type": "module",
   "packageManager": "pnpm@10.24.0",
-  "description": "Example showing Cloudflare Workflows recording inspectable side effects with workflow-capsules.",
+  "description": "Example showing Cloudflare Workflows recording inspectable side effects with stepdaddy.",
   "scripts": {
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
-    "workflow-capsules": "file:../../packages/capsules"
+    "stepdaddy": "file:../../packages/stepdaddy"
   },
   "pnpm": {
     "ignoredBuiltDependencies": ["sharp"],

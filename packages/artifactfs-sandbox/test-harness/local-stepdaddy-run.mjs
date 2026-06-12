@@ -1,5 +1,5 @@
-import { createCapsules, defineExternalCall } from "../../capsules/dist/index.js";
-import { local } from "../../capsules/dist/local.js";
+import { createStepdaddy, defineExternalCall } from "../../stepdaddy/dist/index.js";
+import { local } from "../../stepdaddy/dist/local.js";
 import { mkdir } from "node:fs/promises";
 import { fileURLToPath } from "node:url";
 import path from "node:path";
@@ -12,7 +12,7 @@ const instanceId = `local-${new Date().toISOString().replace(/[^0-9]/g, "").slic
 
 await mkdir(outputRoot, { recursive: true });
 
-const capsules = createCapsules({ adapter: local({ root: outputRoot }) });
+const stepdaddy = createStepdaddy({ adapter: local({ root: outputRoot }) });
 
 const createPaymentIntent = defineExternalCall({
   name: "stripe.payment_intent.create",
@@ -50,21 +50,21 @@ const createInvoice = defineExternalCall({
 
 const workflow = { workflowName, instanceId };
 
-const charge = await capsules.call(createPaymentIntent, {
+const charge = await stepdaddy.call(createPaymentIntent, {
   workflow,
   step: { attempt: 1, step: { name: "charge customer", count: 1 } },
   key: `wf:${instanceId}:charge-customer`,
-  request: { customerId: "cus_capsule_harness", amount: 1200, currency: "usd" },
+  request: { customerId: "cus_stepdaddy_harness", amount: 1200, currency: "usd" },
 });
 
-const invoice = await capsules.call(createInvoice, {
+const invoice = await stepdaddy.call(createInvoice, {
   workflow,
   step: { attempt: 1, step: { name: "create invoice", count: 2 } },
   key: `wf:${instanceId}:create-invoice`,
-  request: { customerId: "cus_capsule_harness", paymentIntentId: charge.id },
+  request: { customerId: "cus_stepdaddy_harness", paymentIntentId: charge.id },
 });
 
-const repoName = `capsule-${workflowName}-${instanceId}`;
+const repoName = `stepdaddy-${workflowName}-${instanceId}`;
 const repoPath = path.join(outputRoot, repoName);
 
 console.log(JSON.stringify({

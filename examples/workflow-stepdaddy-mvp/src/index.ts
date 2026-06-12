@@ -3,8 +3,8 @@ import {
   type WorkflowEvent,
   type WorkflowStep,
 } from "cloudflare:workers";
-import { createCapsules, defineExternalCall } from "workflow-capsules";
-import { cloudflare } from "workflow-capsules/cloudflare";
+import { createStepdaddy, defineExternalCall } from "stepdaddy";
+import { cloudflare } from "stepdaddy/cloudflare";
 
 type ChargePayload = {
   readonly customerId: string;
@@ -51,7 +51,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
   ChargePayload
 > {
   async run(event: WorkflowEvent<ChargePayload>, step: WorkflowStep) {
-    const capsules = createCapsules({ adapter: cloudflare(this.env.ARTIFACTS) });
+    const stepdaddy = createStepdaddy({ adapter: cloudflare(this.env.ARTIFACTS) });
     const stripeBaseUrl = event.payload.stripeBaseUrl ?? "https://api.stripe.com";
 
     const createPaymentIntent = defineExternalCall<StripeIntentInput, StripePaymentIntent>({
@@ -117,7 +117,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
     });
 
     const charge = await step.do("charge customer", async (ctx) => {
-      const intent = await capsules.call(createPaymentIntent, {
+      const intent = await stepdaddy.call(createPaymentIntent, {
         workflow: event,
         step: ctx,
         key: `wf:${event.instanceId}:charge-customer`,
@@ -132,7 +132,7 @@ export class ChargeCustomerWorkflow extends WorkflowEntrypoint<
     });
 
     const invoice = await step.do("create invoice", async (ctx) => {
-      const created = await capsules.call(createInvoice, {
+      const created = await stepdaddy.call(createInvoice, {
         workflow: event,
         step: ctx,
         key: `wf:${event.instanceId}:create-invoice`,

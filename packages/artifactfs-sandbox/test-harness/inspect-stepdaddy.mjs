@@ -29,7 +29,7 @@ try {
 
   const run = findRun(runs, selector);
   if (run === undefined) {
-    throw new CliError(`No capsule run matched "${selector}". Run without arguments to list available runs.`);
+    throw new CliError(`No Stepdaddy run matched "${selector}". Run without arguments to list available runs.`);
   }
 
   const selectedCall = selectCall(run, { stepSelector, callSelector });
@@ -60,7 +60,7 @@ async function readRuns() {
   for (const entry of entries) {
     if (!entry.isDirectory()) continue;
     const repoPath = path.join(runsRoot, entry.name);
-    const runPath = path.join(repoPath, ".capsule", "run.json");
+    const runPath = path.join(repoPath, ".stepd", "run.json");
     const runRecord = await readJson(runPath).catch(() => undefined);
     if (runRecord === undefined) continue;
 
@@ -98,7 +98,7 @@ function normalizeDemoEntry(entry) {
 }
 
 async function readCalls(repoPath) {
-  const byKeyRoot = path.join(repoPath, ".capsule", "by-key");
+  const byKeyRoot = path.join(repoPath, ".stepd", "by-key");
   const entries = await fs.readdir(byKeyRoot, { withFileTypes: true }).catch((error) => {
     if (error?.code === "ENOENT") return [];
     throw error;

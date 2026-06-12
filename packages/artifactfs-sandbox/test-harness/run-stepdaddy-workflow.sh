@@ -4,7 +4,7 @@ set -euo pipefail
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 SANDBOX_DIR=$(cd "${SCRIPT_DIR}/.." && pwd)
 REPO_ROOT=$(cd "${SANDBOX_DIR}/../.." && pwd)
-WORKFLOW_DIR="${REPO_ROOT}/examples/workflow-capsule-mvp"
+WORKFLOW_DIR="${REPO_ROOT}/examples/workflow-stepdaddy-mvp"
 RUN_REPOS_DIR="${SANDBOX_DIR}/workflow-run-repos"
 SANDBOX_URL=${SANDBOX_URL:-https://artifact-fs-sandbox.sreeaadhi07.workers.dev}
 
@@ -45,16 +45,16 @@ const instanceId = process.env.WORKFLOW_INSTANCE_ID;
 const clean = (value) => value.replace(/[^a-zA-Z0-9_-]+/g, "-").replace(/^-+|-+$/g, "") || "run";
 const workflow = clean(workflowName);
 const instance = clean(instanceId);
-let repoName = `capsule-${workflow}-${instance}`;
+let repoName = `stepdaddy-${workflow}-${instance}`;
 if (repoName.length > 100) {
   const repoHash = crypto.createHash("sha256")
     .update(JSON.stringify({ workflowName, instanceId }))
     .digest("hex");
   const suffix = repoHash.slice(0, 8);
-  const budget = 100 - "capsule-".length - suffix.length - 2;
+  const budget = 100 - "stepdaddy-".length - suffix.length - 2;
   const workflowBudget = Math.ceil(budget / 2);
   const instanceBudget = budget - workflowBudget;
-  repoName = `capsule-${workflow.slice(0, workflowBudget)}-${instance.slice(0, instanceBudget)}-${suffix}`;
+  repoName = `stepdaddy-${workflow.slice(0, workflowBudget)}-${instance.slice(0, instanceBudget)}-${suffix}`;
 }
 process.stdout.write(repoName);
 NODE
@@ -122,11 +122,11 @@ INSPECTOR_DEPLOY=$(pnpx wrangler deploy --config "${SCRIPT_DIR}/artifacts-inspec
 printf '%s\n' "$INSPECTOR_DEPLOY"
 INSPECTOR_URL=${INSPECTOR_URL:-$(printf '%s\n' "$INSPECTOR_DEPLOY" | extract_worker_url)}
 
-echo "Deploying workflow-capsules example..."
+echo "Deploying Stepdaddy example..."
 (
   cd "$WORKFLOW_DIR"
   pnpm install --frozen-lockfile
-  printf '%s' 'sk_test_capsules_harness' | pnpm exec wrangler secret put STRIPE_SECRET
+  printf '%s' 'sk_test_stepdaddy_harness' | pnpm exec wrangler secret put STRIPE_SECRET
   pnpm exec wrangler deploy
 ) | tee "${RUN_REPOS_DIR}.workflow-deploy.log"
 WORKFLOW_URL=${WORKFLOW_URL:-$(extract_worker_url <"${RUN_REPOS_DIR}.workflow-deploy.log")}
@@ -172,7 +172,7 @@ esac
 
 WORKFLOW_NAME=${WORKFLOW_NAME:-charge-customer-workflow}
 REPO_NAME=$(repo_name_for_run "$WORKFLOW_NAME" "$INSTANCE_ID")
-echo "Capsule repo: ${REPO_NAME}"
+echo "Stepdaddy repo: ${REPO_NAME}"
 
 REPO_QUERY=$(urlencode "$REPO_NAME")
 REPO_JSON=$(curl -fsS -H "authorization: Bearer ${ARTIFACTS_INSPECTOR_TOKEN}" "${INSPECTOR_URL}/repo?name=${REPO_QUERY}")
@@ -184,7 +184,7 @@ if [ -z "$REMOTE" ] || [ -z "$READ_TOKEN" ]; then
   exit 1
 fi
 
-SANDBOX_ID="capsule-${INSTANCE_ID%%-*}"
+SANDBOX_ID="stepdaddy-${INSTANCE_ID%%-*}"
 echo "Mounting capsule repo through ArtifactFS sandbox as ${SANDBOX_ID}..."
 REMOTE="$REMOTE" READ_TOKEN="$READ_TOKEN" SANDBOX_ID="$SANDBOX_ID" node <<'NODE' | curl -fsS -X POST "${SANDBOX_URL}/mount" \
   -H "authorization: Bearer ${ARTIFACTS_SANDBOX_API_TOKEN}" \
@@ -200,13 +200,13 @@ process.stdout.write(JSON.stringify({
 NODE
 printf '\n'
 
-echo "Sandbox .capsule/run.json:"
+echo "Sandbox .stepd/run.json:"
 curl -fsS -H "authorization: Bearer ${ARTIFACTS_SANDBOX_API_TOKEN}" \
-  "${SANDBOX_URL}/file?sandboxId=${SANDBOX_ID}&path=.capsule/run.json"
+  "${SANDBOX_URL}/file?sandboxId=${SANDBOX_ID}&path=.stepd/run.json"
 
-echo "Sandbox .capsule/by-key:"
+echo "Sandbox .stepd/by-key:"
 curl -fsS -H "authorization: Bearer ${ARTIFACTS_SANDBOX_API_TOKEN}" \
-  "${SANDBOX_URL}/tree?sandboxId=${SANDBOX_ID}&path=.capsule/by-key"
+  "${SANDBOX_URL}/tree?sandboxId=${SANDBOX_ID}&path=.stepd/by-key"
 printf '\n'
 
 mkdir -p "$RUN_REPOS_DIR"
@@ -235,5 +235,5 @@ fs.writeFileSync(path.join(process.env.RUN_REPOS_DIR, "latest.json"), JSON.strin
 NODE
 
 echo "Cloned files:"
-find "$CLONE_DIR/.capsule" -maxdepth 4 -type f | sort
+find "$CLONE_DIR/.stepd" -maxdepth 4 -type f | sort
 echo "Latest metadata: ${RUN_REPOS_DIR}/latest.json"

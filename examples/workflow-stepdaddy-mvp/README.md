@@ -1,6 +1,6 @@
-# Workflow Capsules Example
+# Stepdaddy Workflow Example
 
-This example shows `workflow-capsules` recording idempotency-aware external calls inside Cloudflare Workflow steps.
+This example shows `stepdaddy` recording idempotency-aware external calls inside Cloudflare Workflow steps.
 
 The Workflow is Stripe-shaped on purpose: it demonstrates stable idempotency keys, request digest guards, committed result reuse, and compact call-history records in Cloudflare Artifacts.
 
@@ -13,18 +13,17 @@ paymentIntentId
 invoiceId
 ```
 
-Capsules stores compact call records in Artifacts:
+Stepdaddy stores compact call records in Artifacts:
 
 ```txt
-.capsule/run.json
-.capsule/by-key/<key-hash>/request.json
-.capsule/by-key/<key-hash>/started.json
-.capsule/by-key/<key-hash>/committed.json
-.capsule/by-key/<key-hash>/summary.json
-.capsule/by-key/<key-hash>/attempts/001-started.json
+.stepd/run.json
+.stepd/by-key/<key-hash>/request.json
+.stepd/by-key/<key-hash>/committed.json
+.stepd/by-key/<key-hash>/attempts/001-started.json
+.stepd/by-key/<key-hash>/attempts/001-error.json
 ```
 
-Workflows owns execution and retry config. Capsules tracks the external side-effect boundary inside the step.
+Workflows owns execution and retry config. Stepdaddy tracks the external side-effect boundary inside the step.
 
 ## Configure Cloudflare
 
@@ -78,9 +77,9 @@ Check status:
 curl http://localhost:8787/status/<workflow-instance-id>
 ```
 
-## Why Capsules
+## Why Stepdaddy
 
-Plain Workflows plus Stripe idempotency is already useful. Capsules adds a durable record around the provider call:
+Plain Workflows plus Stripe idempotency is already useful. Stepdaddy adds a durable record around the provider call:
 
 ```txt
 same key + same request -> reuse committed result
@@ -88,20 +87,20 @@ same key + different request -> reject before provider execution
 started without committed result -> retry idempotently, reconcile, or fail closed
 ```
 
-Capsules does not guarantee exactly-once provider execution and does not replace rollback. Use Workflows rollback to compensate successful forward steps when later steps fail.
+Stepdaddy does not guarantee exactly-once provider execution and does not replace rollback. Use Workflows rollback to compensate successful forward steps when later steps fail.
 
 ## Swap Adapters
 
 The Workflow body does not change when the call-history adapter changes:
 
 ```ts
-import { cloudflare } from "workflow-capsules/cloudflare";
-import { local } from "workflow-capsules/local";
-import { memory } from "workflow-capsules/memory";
-import { remote } from "workflow-capsules/remote";
+import { cloudflare } from "stepdaddy/cloudflare";
+import { local } from "stepdaddy/local";
+import { memory } from "stepdaddy/memory";
+import { remote } from "stepdaddy/remote";
 
-createCapsules({ adapter: cloudflare(env.ARTIFACTS) });
-createCapsules({ adapter: local({ root: "/tmp/capsules" }) });
-createCapsules({ adapter: memory() });
-createCapsules({ adapter: remote({ url: "http://127.0.0.1:8789", token }) });
+createStepdaddy({ adapter: cloudflare(env.ARTIFACTS) });
+createStepdaddy({ adapter: local({ root: "/tmp/stepdaddy" }) });
+createStepdaddy({ adapter: memory() });
+createStepdaddy({ adapter: remote({ url: "http://127.0.0.1:8789", token }) });
 ```

@@ -6,8 +6,8 @@
   "packageManager": "pnpm@11.0.8",
   "description": "Cloudflare Sandbox-hosted ArtifactFS service.",
   "scripts": {
-    "capsules:demo": "./test-harness/run-idempotency-workflows.sh",
-    "capsules:logs": "node test-harness/inspect-capsules.mjs",
+    "stepdaddy:demo": "./test-harness/run-idempotency-workflows.sh",
+    "stepdaddy:logs": "node test-harness/inspect-stepdaddy.mjs",
     "deploy": "pnpx wrangler deploy",
     "dev": "pnpx wrangler dev",
     "typecheck": "tsc --noEmit"

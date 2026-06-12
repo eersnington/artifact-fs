@@ -1,6 +1,6 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "artifact-fs-workflow-capsule-mvp",
+  "name": "artifact-fs-workflow-stepdaddy-mvp",
   "main": "src/index.ts",
   "compatibility_date": "2026-06-10",
   "observability": {
