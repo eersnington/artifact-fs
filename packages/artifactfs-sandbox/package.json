@@ -8,6 +8,7 @@
   "scripts": {
     "stepdaddy:demo": "./test-harness/run-idempotency-workflows.sh",
     "stepdaddy:logs": "node test-harness/inspect-stepdaddy.mjs",
+    "smfs:bakeoff": "node test-harness/smfs-artifactfs-bakeoff.mjs",
     "deploy": "pnpx wrangler deploy",
     "dev": "pnpx wrangler dev",
     "typecheck": "tsc --noEmit"
