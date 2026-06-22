@@ -28,8 +28,19 @@ export type ArtifactFsEvent = {
   repoName?: string;
   kind: string;
   at?: string;
+  generation?: number;
   path?: string;
+  objectOid?: string;
   state?: string;
+};
+
+export type MilestoneEvent = {
+  key: string;
+  kind: string;
+  repo: string;
+  detail: string;
+  why: string;
+  count: number;
 };
 
 export type RunState = {
@@ -54,11 +65,11 @@ export type Stage = {
 };
 
 export const stages: Stage[] = [
-  { key: "register", label: "Desired repo", description: "The Rivet actor published an isolated desired repo for ArtifactFS to reconcile.", index: 0 },
-  { key: "mount", label: "Mount tree", description: "ArtifactFS exposed that repo as a working tree.", index: 1 },
-  { key: "warm", label: "Warm reads", description: "The agent read common files through the mounted tree.", index: 2 },
-  { key: "write", label: "Write result", description: "The agent wrote demo-agent-output/<agent>.md.", index: 3 },
-  { key: "commit", label: "Commit result", description: "Git created a result commit inside the working tree.", index: 4 },
+  { key: "register", label: "Rivet requests workspaces", description: "Actor state says each agent should get its own Git workspace.", index: 0 },
+  { key: "mount", label: "ArtifactFS mounts folders", description: "The daemon exposes /workspace/mnt/agent-* as writable Git working trees.", index: 1 },
+  { key: "warm", label: "Agents read files", description: "Reads go through ArtifactFS and hydrate blobs locally.", index: 2 },
+  { key: "write", label: "Agents write outputs", description: "Writes land in ArtifactFS' local overlay, not in Rivet.", index: 3 },
+  { key: "commit", label: "Git commits created", description: "Each agent commits its result inside its mounted folder.", index: 4 },
 ];
 
 export function stageIndex(agent: AgentState): number {
@@ -124,6 +135,101 @@ export function inferOutcome(state: RunState): string {
   }
 
   return `${done} of ${agents.length} agents have committed so far. The stalled stage tells you whether registration, mount readiness, file IO, or Git commit is the current boundary.`;
+}
+
+export function currentRunAgentCount(state: RunState): number {
+  return state.agentStates.length || state.agents;
+}
+
+export function materializedWorkspaceCount(state: RunState): number {
+  return state.agentStates.filter((agent) => stageIndex(agent) >= 1 || agent.phase === "done").length;
+}
+
+export function commitCount(state: RunState): number {
+  return new Set(state.agentStates.flatMap((agent) => agent.commit ? [agent.commit] : [])).size;
+}
+
+export function summarizeMilestoneEvents(events: ArtifactFsEvent[] = []): MilestoneEvent[] {
+  const priority = new Map([
+    ["mount.ready", 0],
+    ["mount.attempted", 1],
+    ["snapshot.published", 2],
+    ["head.changed", 3],
+    ["hydration.complete", 4],
+    ["hydration.queued", 5],
+    ["fetch.succeeded", 6],
+    ["overlay.dirty", 7],
+    ["overlay.clean", 8],
+    ["repo.disabled", 9],
+    ["repo.desired", 10],
+  ]);
+  const rows = new Map<string, MilestoneEvent>();
+
+  for (const event of events) {
+    const repo = event.repoName || event.repoId || "workspace";
+    const key = event.kind === "repo.desired"
+      ? `${event.kind}:${repo}`
+      : `${event.kind}:${repo}:${event.generation || ""}:${event.path || event.objectOid || ""}`;
+    const existing = rows.get(key);
+    if (existing) {
+      existing.count += 1;
+      continue;
+    }
+    rows.set(key, {
+      key,
+      kind: event.kind,
+      repo,
+      detail: eventDetail(event),
+      why: eventWhy(event.kind),
+      count: 1,
+    });
+  }
+
+  return Array.from(rows.values())
+    .sort((a, b) => (priority.get(a.kind) ?? 99) - (priority.get(b.kind) ?? 99))
+    .slice(0, 10);
+}
+
+function eventDetail(event: ArtifactFsEvent): string {
+  if (event.path) {
+    return event.path;
+  }
+  if (event.generation) {
+    return `generation ${event.generation}`;
+  }
+  if (event.state) {
+    return event.state;
+  }
+  return "-";
+}
+
+function eventWhy(kind: string): string {
+  switch (kind) {
+    case "repo.desired":
+      return "Rivet kept this workspace in desired state.";
+    case "mount.attempted":
+      return "ArtifactFS started materializing the workspace.";
+    case "mount.ready":
+      return "ArtifactFS exposed a writable Git-backed folder.";
+    case "hydration.queued":
+      return "A blob warmup was requested outside the read hot path.";
+    case "hydration.complete":
+      return "A Git blob was hydrated into the local cache.";
+    case "snapshot.published":
+      return "ArtifactFS published a Git tree snapshot.";
+    case "head.changed":
+      return "A commit changed the workspace HEAD.";
+    case "fetch.succeeded":
+      return "The daemon refreshed remote Git state.";
+    case "overlay.dirty":
+      return "Local writes made the workspace dirty.";
+    case "overlay.clean":
+      return "Local overlay writes were committed or cleared.";
+    case "repo.disabled":
+      return "Rivet removed this workspace from desired state.";
+    default:
+      return "ArtifactFS recorded a runtime event.";
+  }
 }
 
 export function phaseBadgeVariant(phase: AgentPhase | RunState["state"]): "success" | "warning" | "error" | "neutral" {
