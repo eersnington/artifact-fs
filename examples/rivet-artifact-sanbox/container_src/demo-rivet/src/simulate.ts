@@ -1,6 +1,6 @@
 import path from "node:path";
-import { addRepo, artifactStatus, gitCommit, gitHead, readMaybe, writeText } from "./artifactfs.js";
-import { type AgentState, type RunState, writeState } from "./events.js";
+import { artifactStatus, gitCommit, gitHead, readMaybe, writeText } from "./artifactfs.js";
+import type { AgentState, RunState } from "./events.js";
 
 export type StartRequest = {
   runId: string;
@@ -11,9 +11,12 @@ export type StartRequest = {
 };
 
 const mountRoot = process.env.MOUNT_ROOT ?? "/workspace/mnt";
-let registration = Promise.resolve();
 
-export async function runDemo(request: StartRequest): Promise<RunState> {
+export type RunStateRecorder = {
+  recordRunState(state: RunState): Promise<RunState>;
+};
+
+export async function runDemo(request: StartRequest, recorder: RunStateRecorder): Promise<RunState> {
   const startedAt = Date.now();
   const agents = Array.from({ length: request.agents }, (_, index) => initialAgent(index + 1));
   let runState: RunState = {
@@ -26,20 +29,22 @@ export async function runDemo(request: StartRequest): Promise<RunState> {
     startedAt,
     updatedAt: startedAt,
     agentStates: agents,
+    desiredRepos: [],
+    artifactFsEvents: [],
   };
 
   const update = async (agent: AgentState, next: Partial<AgentState>) => {
     Object.assign(agent, next, { updatedAt: Date.now() });
     runState = { ...runState, updatedAt: Date.now(), agentStates: agents };
-    await writeState(runState);
+    runState = await recorder.recordRunState(runState);
   };
 
-  await writeState(runState);
+  runState = await recorder.recordRunState(runState);
   await Promise.all(agents.map((agent) => runAgent(request, agent, update)));
 
   const failed = agents.some((agent) => agent.phase === "failed");
   runState = { ...runState, state: failed ? "failed" : "done", updatedAt: Date.now(), agentStates: agents };
-  await writeState(runState);
+  runState = await recorder.recordRunState(runState);
   return runState;
 }
 
@@ -49,9 +54,7 @@ async function runAgent(
   update: (agent: AgentState, next: Partial<AgentState>) => Promise<void>,
 ): Promise<void> {
   try {
-    await update(agent, { step: "registering repo" });
-    await withRegistration(() => addRepo(agent.repoName, request.remote, request.branch, mountRoot));
-
+    await update(agent, { step: "waiting for desired repo mount" });
     await update(agent, { phase: "mounted", step: "waiting for mount" });
     await waitForMount(agent.repoName, agent.mountPath);
     await update(agent, { head: await gitHead(agent.mountPath), step: "mounted" });
@@ -104,20 +107,6 @@ async function waitForMount(repoName: string, mountPath: string): Promise<void> 
     await new Promise((resolve) => setTimeout(resolve, 500));
   }
   throw new Error(`mount did not become ready for ${repoName}`);
-}
-
-async function withRegistration<T>(fn: () => Promise<T>): Promise<T> {
-  const previous = registration;
-  let release!: () => void;
-  registration = new Promise<void>((resolve) => {
-    release = resolve;
-  });
-  await previous;
-  try {
-    return await fn();
-  } finally {
-    release();
-  }
 }
 
 function renderOutput(request: StartRequest, agent: AgentState): string {

@@ -57,19 +57,19 @@ func NewRivet(opts RivetOptions) (*RivetCoordinator, error) {
 	}, nil
 }
 
-func (c *RivetCoordinator) DesiredRepos(ctx context.Context, host HostInfo) ([]model.RepoConfig, error) {
+func (c *RivetCoordinator) DesiredRepos(ctx context.Context, host HostInfo) (DesiredRepoSet, error) {
 	var out desiredReposResponse
 	query := url.Values{}
 	query.Set("root", host.Root)
 	query.Set("mountRoot", host.MountRoot)
 	if err := c.do(ctx, http.MethodGet, "/v1/desired-repos", query, nil, &out); err != nil {
-		return nil, err
+		return DesiredRepoSet{}, err
 	}
 	repos := make([]model.RepoConfig, 0, len(out.Repos))
 	for _, repo := range out.Repos {
-		repos = append(repos, repo.toModel())
+		repos = append(repos, repo.toModel(out.Source))
 	}
-	return repos, nil
+	return DesiredRepoSet{Repos: repos, Source: out.Source, Authoritative: out.Authoritative}, nil
 }
 
 func (c *RivetCoordinator) RecordEvent(ctx context.Context, event RuntimeEvent) error {
@@ -154,7 +154,9 @@ func (c *RivetCoordinator) do(ctx context.Context, method string, path string, q
 }
 
 type desiredReposResponse struct {
-	Repos []repoConfigWire `json:"repos"`
+	Repos         []repoConfigWire `json:"repos"`
+	Source        string           `json:"source,omitempty"`
+	Authoritative bool             `json:"authoritative,omitempty"`
 }
 
 type repoConfigWire struct {
@@ -173,9 +175,14 @@ type repoConfigWire struct {
 	MetaDBPath             string `json:"metaDbPath,omitempty"`
 	OverlayDBPath          string `json:"overlayDbPath,omitempty"`
 	Enabled                bool   `json:"enabled"`
+	DesiredOwner           string `json:"desiredOwner,omitempty"`
 }
 
-func (r repoConfigWire) toModel() model.RepoConfig {
+func (r repoConfigWire) toModel(source string) model.RepoConfig {
+	desiredOwner := r.DesiredOwner
+	if desiredOwner == "" {
+		desiredOwner = source
+	}
 	return model.RepoConfig{
 		ID:                 model.RepoID(r.ID),
 		Name:               r.Name,
@@ -192,6 +199,7 @@ func (r repoConfigWire) toModel() model.RepoConfig {
 		MetaDBPath:         r.MetaDBPath,
 		OverlayDBPath:      r.OverlayDBPath,
 		Enabled:            r.Enabled,
+		DesiredOwner:       desiredOwner,
 	}
 }
 

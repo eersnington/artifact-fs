@@ -12,6 +12,26 @@ export type AgentState = {
   updatedAt: number;
 };
 
+export type DesiredRepo = {
+  id: string;
+  name: string;
+  remoteUrl: string;
+  branch: string;
+  refreshIntervalSeconds: number;
+  enabled: boolean;
+  desiredOwner: string;
+};
+
+export type ArtifactFsEvent = {
+  id?: string;
+  repoId: string;
+  repoName?: string;
+  kind: string;
+  at?: string;
+  path?: string;
+  state?: string;
+};
+
 export type RunState = {
   runId: string;
   remote: string;
@@ -22,6 +42,8 @@ export type RunState = {
   startedAt: number;
   updatedAt: number;
   agentStates: AgentState[];
+  desiredRepos?: DesiredRepo[];
+  artifactFsEvents?: ArtifactFsEvent[];
 };
 
 export type Stage = {
@@ -32,7 +54,7 @@ export type Stage = {
 };
 
 export const stages: Stage[] = [
-  { key: "register", label: "Register repo", description: "artifact-fs add-repo registered an isolated repo name.", index: 0 },
+  { key: "register", label: "Desired repo", description: "The Rivet actor published an isolated desired repo for ArtifactFS to reconcile.", index: 0 },
   { key: "mount", label: "Mount tree", description: "ArtifactFS exposed that repo as a working tree.", index: 1 },
   { key: "warm", label: "Warm reads", description: "The agent read common files through the mounted tree.", index: 2 },
   { key: "write", label: "Write result", description: "The agent wrote demo-agent-output/<agent>.md.", index: 3 },

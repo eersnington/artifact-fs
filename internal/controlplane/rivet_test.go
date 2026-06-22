@@ -27,7 +27,7 @@ func TestRivetDesiredRepos(t *testing.T) {
 		if got := r.URL.Query().Get("mountRoot"); got != "/mnt" {
 			t.Fatalf("mountRoot query = %q", got)
 		}
-		writeJSON(t, w, desiredReposResponse{Repos: []repoConfigWire{
+		writeJSON(t, w, desiredReposResponse{Source: "rivet-artifact-sandbox", Authoritative: true, Repos: []repoConfigWire{
 			{
 				ID:                     "repo-1",
 				Name:                   "repo-1",
@@ -42,14 +42,20 @@ func TestRivetDesiredRepos(t *testing.T) {
 	defer server.Close()
 
 	c := newTestRivet(t, server.URL, "test-token", 0)
-	repos, err := c.DesiredRepos(context.Background(), HostInfo{Root: "/state", MountRoot: "/mnt"})
+	desired, err := c.DesiredRepos(context.Background(), HostInfo{Root: "/state", MountRoot: "/mnt"})
 	if err != nil {
 		t.Fatalf("DesiredRepos returned error: %v", err)
 	}
-	if len(repos) != 1 {
-		t.Fatalf("repo count = %d, want 1", len(repos))
+	if !desired.Authoritative {
+		t.Fatalf("Authoritative = false, want true")
 	}
-	repo := repos[0]
+	if desired.Source != "rivet-artifact-sandbox" {
+		t.Fatalf("Source = %q, want rivet-artifact-sandbox", desired.Source)
+	}
+	if len(desired.Repos) != 1 {
+		t.Fatalf("repo count = %d, want 1", len(desired.Repos))
+	}
+	repo := desired.Repos[0]
 	if repo.ID != "repo-1" || repo.Name != "repo-1" || repo.Branch != "main" {
 		t.Fatalf("unexpected repo: %#v", repo)
 	}
@@ -61,6 +67,28 @@ func TestRivetDesiredRepos(t *testing.T) {
 	}
 	if !repo.Enabled {
 		t.Fatalf("Enabled = false, want true")
+	}
+	if repo.DesiredOwner != "rivet-artifact-sandbox" {
+		t.Fatalf("DesiredOwner = %q, want rivet-artifact-sandbox", repo.DesiredOwner)
+	}
+}
+
+func TestRivetDesiredReposDefaultsToNonAuthoritative(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		writeJSON(t, w, desiredReposResponse{})
+	}))
+	defer server.Close()
+
+	c := newTestRivet(t, server.URL, "", 0)
+	desired, err := c.DesiredRepos(context.Background(), HostInfo{})
+	if err != nil {
+		t.Fatalf("DesiredRepos returned error: %v", err)
+	}
+	if desired.Authoritative {
+		t.Fatalf("Authoritative = true, want false")
+	}
+	if len(desired.Repos) != 0 {
+		t.Fatalf("repo count = %d, want 0", len(desired.Repos))
 	}
 }
 

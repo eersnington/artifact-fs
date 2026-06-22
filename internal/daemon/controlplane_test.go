@@ -20,6 +20,8 @@ import (
 
 type fakeCoordinator struct {
 	desired       []model.RepoConfig
+	desiredSource string
+	authoritative bool
 	desiredErr    error
 	warmupPlan    controlplane.WarmupPlan
 	warmupErr     error
@@ -31,11 +33,11 @@ type fakeCoordinator struct {
 	closed        bool
 }
 
-func (f *fakeCoordinator) DesiredRepos(context.Context, controlplane.HostInfo) ([]model.RepoConfig, error) {
+func (f *fakeCoordinator) DesiredRepos(context.Context, controlplane.HostInfo) (controlplane.DesiredRepoSet, error) {
 	if f.desiredErr != nil {
-		return nil, f.desiredErr
+		return controlplane.DesiredRepoSet{}, f.desiredErr
 	}
-	return f.desired, nil
+	return controlplane.DesiredRepoSet{Repos: f.desired, Source: f.desiredSource, Authoritative: f.authoritative}, nil
 }
 
 func (f *fakeCoordinator) RecordEvent(ctx context.Context, event controlplane.RuntimeEvent) error {
@@ -111,6 +113,12 @@ func TestSyncDesiredReposAddsReposToLocalRegistry(t *testing.T) {
 	if !repo.Enabled {
 		t.Fatalf("Enabled = false, want true")
 	}
+	if repo.ManagedBy != model.RepoManagedByControlplane {
+		t.Fatalf("ManagedBy = %q, want controlplane", repo.ManagedBy)
+	}
+	if repo.DesiredOwner != "controlplane" {
+		t.Fatalf("DesiredOwner = %q, want controlplane", repo.DesiredOwner)
+	}
 }
 
 func TestSyncDesiredReposFailureKeepsLocalRegistryUsable(t *testing.T) {
@@ -139,6 +147,133 @@ func TestSyncDesiredReposFailureKeepsLocalRegistryUsable(t *testing.T) {
 	}
 	if _, err := svc.registry.GetRepo(ctx, "actor-repo"); err == nil {
 		t.Fatalf("unexpected actor-repo in local registry after desired repo failure")
+	}
+}
+
+func TestSyncDesiredReposDoesNotClobberManualRepoByID(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, ctx)
+	defer svc.Close()
+
+	manual := model.RepoConfig{Name: "manual", ID: "repo", RemoteURL: "https://example.invalid/manual.git", RemoteURLRedacted: "https://example.invalid/manual.git", Branch: "main", RefreshInterval: time.Minute, Enabled: true}
+	svc.fillPaths(&manual)
+	if err := svc.registry.AddRepo(ctx, manual); err != nil {
+		t.Fatalf("AddRepo returned error: %v", err)
+	}
+	svc.SetCoordinator(&fakeCoordinator{desired: []model.RepoConfig{{Name: "actor", ID: "repo", RemoteURL: "https://example.invalid/actor.git", Branch: "main", Enabled: true}}})
+
+	svc.syncDesiredRepos(ctx)
+
+	repo, err := svc.registry.GetRepo(ctx, "manual")
+	if err != nil {
+		t.Fatalf("manual repo missing: %v", err)
+	}
+	if repo.ManagedBy != model.RepoManagedByLocal || repo.RemoteURL != "https://example.invalid/manual.git" {
+		t.Fatalf("manual repo was clobbered: %#v", repo)
+	}
+	if _, err := svc.registry.GetRepo(ctx, "actor"); err == nil {
+		t.Fatalf("actor repo was inserted despite manual id conflict")
+	}
+}
+
+func TestSyncDesiredReposDoesNotClobberManualRepoByName(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, ctx)
+	defer svc.Close()
+
+	manual := model.RepoConfig{Name: "repo", ID: "manual-id", RemoteURL: "https://example.invalid/manual.git", RemoteURLRedacted: "https://example.invalid/manual.git", Branch: "main", RefreshInterval: time.Minute, Enabled: true}
+	svc.fillPaths(&manual)
+	if err := svc.registry.AddRepo(ctx, manual); err != nil {
+		t.Fatalf("AddRepo returned error: %v", err)
+	}
+	svc.SetCoordinator(&fakeCoordinator{desired: []model.RepoConfig{{Name: "repo", ID: "actor-id", RemoteURL: "https://example.invalid/actor.git", Branch: "main", Enabled: true}}})
+
+	svc.syncDesiredRepos(ctx)
+
+	repo, err := svc.registry.GetRepo(ctx, "repo")
+	if err != nil {
+		t.Fatalf("manual repo missing: %v", err)
+	}
+	if repo.ID != "manual-id" || repo.ManagedBy != model.RepoManagedByLocal {
+		t.Fatalf("manual repo was clobbered: %#v", repo)
+	}
+}
+
+func TestAuthoritativeDesiredReposDisablesMissingControlplaneRepos(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, ctx)
+	defer svc.Close()
+	events := make(chan controlplane.RuntimeEvent, 4)
+
+	stale := model.RepoConfig{Name: "stale", ID: "stale", RemoteURL: "https://example.invalid/stale.git", Branch: "main", RefreshInterval: time.Minute, Enabled: true, ManagedBy: model.RepoManagedByControlplane, DesiredOwner: "owner"}
+	svc.fillPaths(&stale)
+	if err := svc.registry.AddRepo(ctx, stale); err != nil {
+		t.Fatalf("AddRepo returned error: %v", err)
+	}
+	svc.SetCoordinator(&fakeCoordinator{desiredSource: "owner", authoritative: true, events: events})
+
+	svc.syncDesiredRepos(ctx)
+
+	repo, err := svc.registry.GetRepo(ctx, "stale")
+	if err != nil {
+		t.Fatalf("GetRepo returned error: %v", err)
+	}
+	if repo.Enabled {
+		t.Fatalf("Enabled = true, want false")
+	}
+	select {
+	case event := <-events:
+		if event.Kind != controlplane.EventRepoDisabled || event.ID != "repo.disabled/stale" {
+			t.Fatalf("unexpected disabled event: %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for repo.disabled event")
+	}
+}
+
+func TestNonAuthoritativeDesiredReposLeavesMissingControlplaneReposEnabled(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, ctx)
+	defer svc.Close()
+
+	repo := model.RepoConfig{Name: "repo", ID: "repo", RemoteURL: "https://example.invalid/repo.git", Branch: "main", RefreshInterval: time.Minute, Enabled: true, ManagedBy: model.RepoManagedByControlplane, DesiredOwner: "owner"}
+	svc.fillPaths(&repo)
+	if err := svc.registry.AddRepo(ctx, repo); err != nil {
+		t.Fatalf("AddRepo returned error: %v", err)
+	}
+	svc.SetCoordinator(&fakeCoordinator{desiredSource: "owner", authoritative: false})
+
+	svc.syncDesiredRepos(ctx)
+
+	got, err := svc.registry.GetRepo(ctx, "repo")
+	if err != nil {
+		t.Fatalf("GetRepo returned error: %v", err)
+	}
+	if !got.Enabled {
+		t.Fatalf("Enabled = false, want true")
+	}
+}
+
+func TestAuthoritativeDesiredReposDoesNotDisableManualRepos(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, ctx)
+	defer svc.Close()
+
+	repo := model.RepoConfig{Name: "repo", ID: "repo", RemoteURL: "https://example.invalid/repo.git", Branch: "main", RefreshInterval: time.Minute, Enabled: true}
+	svc.fillPaths(&repo)
+	if err := svc.registry.AddRepo(ctx, repo); err != nil {
+		t.Fatalf("AddRepo returned error: %v", err)
+	}
+	svc.SetCoordinator(&fakeCoordinator{desiredSource: "owner", authoritative: true})
+
+	svc.syncDesiredRepos(ctx)
+
+	got, err := svc.registry.GetRepo(ctx, "repo")
+	if err != nil {
+		t.Fatalf("GetRepo returned error: %v", err)
+	}
+	if !got.Enabled {
+		t.Fatalf("Enabled = false, want true")
 	}
 }
 

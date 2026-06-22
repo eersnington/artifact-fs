@@ -12,12 +12,8 @@ async function run(file: string, args: string[], cwd?: string): Promise<string> 
   return stdout.trim();
 }
 
-export async function addRepo(repoName: string, remote: string, branch: string, mountRoot: string): Promise<void> {
-  await run("artifact-fs", ["add-repo", "--name", repoName, "--remote", remote, "--branch", branch, "--mount-root", mountRoot]);
-}
-
 export async function artifactStatus(repoName: string): Promise<string> {
-  return run("artifact-fs", ["status", "--name", repoName]);
+	return run("artifact-fs", ["status", "--name", repoName]);
 }
 
 export async function gitHead(cwd: string): Promise<string> {

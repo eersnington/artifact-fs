@@ -151,6 +151,8 @@ func runtimeEventID(event controlplane.RuntimeEvent) string {
 	switch event.Kind {
 	case controlplane.EventRepoDesired:
 		return eventID(event.Kind, event.RepoID)
+	case controlplane.EventRepoDisabled:
+		return eventID(event.Kind, event.RepoID)
 	case controlplane.EventMountReady:
 		return eventID(event.Kind, event.RepoID, event.Generation)
 	case controlplane.EventSnapshotPublished:
@@ -285,19 +287,67 @@ func (s *Service) syncDesiredRepos(ctx context.Context) {
 	if s.coordinator == nil {
 		return
 	}
-	repos, err := s.coordinator.DesiredRepos(ctx, controlplane.HostInfo{Root: s.root, MountRoot: s.effectiveMountRoot()})
+	desired, err := s.coordinator.DesiredRepos(ctx, controlplane.HostInfo{Root: s.root, MountRoot: s.effectiveMountRoot()})
 	if err != nil {
 		s.logger.Warn("controlplane desired repos unavailable", "error", auth.RedactString(err.Error()))
 		return
 	}
-	for _, repo := range repos {
-		if err := s.addDesiredRepo(ctx, repo); err != nil {
+	existing, err := s.registry.ListRepos(ctx)
+	if err != nil {
+		s.logger.Warn("controlplane desired repo sync could not read local registry", "error", auth.RedactString(err.Error()))
+		return
+	}
+	existingByID := make(map[model.RepoID]model.RepoConfig, len(existing))
+	existingByName := make(map[string]model.RepoConfig, len(existing))
+	for _, repo := range existing {
+		existingByID[repo.ID] = repo
+		existingByName[repo.Name] = repo
+	}
+	owner := desired.Source
+	if owner == "" {
+		owner = "controlplane"
+	}
+	seen := make(map[model.RepoID]bool, len(desired.Repos))
+	for _, repo := range desired.Repos {
+		normalized, err := s.normalizeDesiredRepo(repo, owner)
+		if err != nil {
 			s.logger.Warn("controlplane desired repo rejected", "repo", repo.Name, "error", auth.RedactString(err.Error()))
+			continue
 		}
+		if conflictsWithManualRepo(normalized, existingByID, existingByName) {
+			s.logger.Warn("controlplane desired repo rejected because a manual repo already uses its id or name", "repo", normalized.Name, "repo_id", normalized.ID)
+			continue
+		}
+		if err := s.addDesiredRepo(ctx, normalized); err != nil {
+			s.logger.Warn("controlplane desired repo rejected", "repo", normalized.Name, "error", auth.RedactString(err.Error()))
+			continue
+		}
+		seen[normalized.ID] = true
+		existingByID[normalized.ID] = normalized
+		existingByName[normalized.Name] = normalized
+	}
+	if !desired.Authoritative {
+		return
+	}
+	for _, repo := range existing {
+		if repo.ManagedBy != model.RepoManagedByControlplane || repo.DesiredOwner != owner || seen[repo.ID] || !repo.Enabled {
+			continue
+		}
+		repo.Enabled = false
+		if err := s.registry.AddRepo(ctx, repo); err != nil {
+			s.logger.Warn("controlplane desired repo disable failed", "repo", repo.Name, "error", auth.RedactString(err.Error()))
+			continue
+		}
+		s.recordEvent(controlplane.RuntimeEvent{
+			RepoID:   repo.ID,
+			RepoName: repo.Name,
+			Kind:     controlplane.EventRepoDisabled,
+		})
 	}
 }
 
 func (s *Service) addDesiredRepo(ctx context.Context, cfg model.RepoConfig) error {
+	cfg.ManagedBy = model.RepoManagedByControlplane
 	if err := model.ValidateRepoName(cfg.Name); err != nil {
 		return err
 	}
@@ -318,6 +368,35 @@ func (s *Service) addDesiredRepo(ctx context.Context, cfg model.RepoConfig) erro
 		Kind:     controlplane.EventRepoDesired,
 	})
 	return nil
+}
+
+func (s *Service) normalizeDesiredRepo(cfg model.RepoConfig, owner string) (model.RepoConfig, error) {
+	if err := model.ValidateRepoName(cfg.Name); err != nil {
+		return model.RepoConfig{}, err
+	}
+	if cfg.ID == "" {
+		cfg.ID = model.RepoID(cfg.Name)
+	}
+	if cfg.RefreshInterval <= 0 {
+		cfg.RefreshInterval = 30 * time.Second
+	}
+	cfg.RemoteURLRedacted = auth.RedactRemoteURL(cfg.RemoteURL)
+	cfg.ManagedBy = model.RepoManagedByControlplane
+	if cfg.DesiredOwner == "" {
+		cfg.DesiredOwner = owner
+	}
+	s.fillPaths(&cfg)
+	return cfg, nil
+}
+
+func conflictsWithManualRepo(cfg model.RepoConfig, existingByID map[model.RepoID]model.RepoConfig, existingByName map[string]model.RepoConfig) bool {
+	if existing, ok := existingByID[cfg.ID]; ok && existing.ManagedBy != model.RepoManagedByControlplane {
+		return true
+	}
+	if existing, ok := existingByName[cfg.Name]; ok && existing.ManagedBy != model.RepoManagedByControlplane {
+		return true
+	}
+	return false
 }
 
 func (s *Service) AddRepo(ctx context.Context, cfg model.RepoConfig) error {

@@ -2,8 +2,6 @@ package controlplane
 
 import (
 	"context"
-
-	"github.com/cloudflare/artifact-fs/internal/model"
 )
 
 type NoopCoordinator struct{}
@@ -12,8 +10,8 @@ func NewNoop() NoopCoordinator {
 	return NoopCoordinator{}
 }
 
-func (NoopCoordinator) DesiredRepos(context.Context, HostInfo) ([]model.RepoConfig, error) {
-	return nil, nil
+func (NoopCoordinator) DesiredRepos(context.Context, HostInfo) (DesiredRepoSet, error) {
+	return DesiredRepoSet{}, nil
 }
 
 func (NoopCoordinator) RecordEvent(context.Context, RuntimeEvent) error {

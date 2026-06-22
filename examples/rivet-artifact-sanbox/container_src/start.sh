@@ -18,12 +18,7 @@ if [ ! -e /dev/fuse ]; then
 fi
 
 mkdir -p "$ARTIFACT_FS_ROOT" "$MOUNT_ROOT" "$DEMO_DIR"
-rm -f "$DEMO_DIR/state.json" "$DEMO_DIR/events.jsonl" "$DEMO_DIR"/state.json.*.tmp
-
-if [ ! -f /tmp/artifact-fs-daemon.pid ] || ! kill -0 "$(cat /tmp/artifact-fs-daemon.pid 2>/dev/null)" 2>/dev/null; then
-  nohup artifact-fs daemon --root "$MOUNT_ROOT" >/tmp/artifact-fs-daemon.log 2>&1 </dev/null &
-  echo "$!" >/tmp/artifact-fs-daemon.pid
-fi
+rm -f "$DEMO_DIR/events.jsonl"
 
 if [ ! -f /tmp/rivet-artifact-sidecar.pid ] || ! kill -0 "$(cat /tmp/rivet-artifact-sidecar.pid 2>/dev/null)" 2>/dev/null; then
   nohup bun run --cwd /opt/rivet-artifact-demo start >/tmp/rivet-artifact-sidecar.log 2>&1 </dev/null &
@@ -37,6 +32,11 @@ for _ in $(seq 1 120); do
   sleep 0.5
 done
 
+if [ ! -f /tmp/artifact-fs-daemon.pid ] || ! kill -0 "$(cat /tmp/artifact-fs-daemon.pid 2>/dev/null)" 2>/dev/null; then
+  nohup artifact-fs daemon --root "$MOUNT_ROOT" --controlplane rivet --rivet-url "http://127.0.0.1:${DEMO_PORT}" >/tmp/artifact-fs-daemon.log 2>&1 </dev/null &
+  echo "$!" >/tmp/artifact-fs-daemon.pid
+fi
+
 export RUN_ID="run-$(date +%s)"
 REQUEST=$(bun -e 'process.stdout.write(JSON.stringify({ runId: process.env.RUN_ID, remote: process.env.DEMO_REMOTE, branch: process.env.DEMO_BRANCH, agents: Number(process.env.DEMO_AGENTS || 2), scenario: process.env.DEMO_SCENARIO }))')
 
@@ -47,4 +47,4 @@ curl -fsS \
   "http://127.0.0.1:${DEMO_PORT}/start"
 
 printf '\nrun_id=%s\n' "$RUN_ID"
-printf 'state=%s/state.json\n' "$DEMO_DIR"
+printf 'state=http://127.0.0.1:%s/state\n' "$DEMO_PORT"

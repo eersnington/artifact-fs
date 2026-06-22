@@ -9,12 +9,15 @@ func TestNoopCoordinatorIsInert(t *testing.T) {
 	c := NewNoop()
 	ctx := context.Background()
 
-	repos, err := c.DesiredRepos(ctx, HostInfo{Root: "/tmp/state", MountRoot: "/tmp/mnt"})
+	desired, err := c.DesiredRepos(ctx, HostInfo{Root: "/tmp/state", MountRoot: "/tmp/mnt"})
 	if err != nil {
 		t.Fatalf("DesiredRepos returned error: %v", err)
 	}
-	if len(repos) != 0 {
-		t.Fatalf("DesiredRepos returned %d repos, want 0", len(repos))
+	if len(desired.Repos) != 0 {
+		t.Fatalf("DesiredRepos returned %d repos, want 0", len(desired.Repos))
+	}
+	if desired.Authoritative {
+		t.Fatalf("DesiredRepos returned authoritative=true, want false")
 	}
 
 	if err := c.RecordEvent(ctx, RuntimeEvent{Kind: EventMountReady}); err != nil {

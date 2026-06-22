@@ -13,6 +13,11 @@ var ErrBlobTooLarge = errors.New("blob too large")
 
 type RepoID string
 
+const (
+	RepoManagedByLocal        = "local"
+	RepoManagedByControlplane = "controlplane"
+)
+
 type RepoConfig struct {
 	ID                 RepoID
 	Name               string
@@ -31,6 +36,8 @@ type RepoConfig struct {
 	MetaDBPath         string
 	OverlayDBPath      string
 	Enabled            bool
+	ManagedBy          string
+	DesiredOwner       string
 }
 
 type RepoRuntimeState struct {

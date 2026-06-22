@@ -11,11 +11,17 @@ import (
 // observe runtime events or provide desired repo and warmup metadata, but local
 // daemon state remains authoritative for filesystem correctness.
 type Coordinator interface {
-	DesiredRepos(ctx context.Context, host HostInfo) ([]model.RepoConfig, error)
+	DesiredRepos(ctx context.Context, host HostInfo) (DesiredRepoSet, error)
 	RecordEvent(ctx context.Context, event RuntimeEvent) error
 	WarmupPlan(ctx context.Context, req WarmupRequest) (WarmupPlan, error)
 	CredentialEnv(ctx context.Context, req CredentialRequest) (CredentialEnv, error)
 	Close() error
+}
+
+type DesiredRepoSet struct {
+	Repos         []model.RepoConfig
+	Source        string
+	Authoritative bool
 }
 
 type HostInfo struct {
@@ -39,6 +45,7 @@ const (
 	EventHydrationQueued   RuntimeEventKind = "hydration.queued"
 	EventHydrationComplete RuntimeEventKind = "hydration.complete"
 	EventStatusObserved    RuntimeEventKind = "status.observed"
+	EventRepoDisabled      RuntimeEventKind = "repo.disabled"
 )
 
 type RuntimeEvent struct {

@@ -27,7 +27,7 @@ export default {
       const url = new URL(request.url);
 
       if (request.method === "GET" && url.pathname === "/") {
-        return new Response("POST /demo/start\nGET /demo/status?sandboxId=demo\nGET /demo/dashboard?sandboxId=demo&token=local-dev-token\n", {
+        return new Response("POST /demo/start\nGET /demo/status?sandboxId=demo\nGET /demo/dashboard?sandboxId=demo&token=local-dev-token\nSidecar exposes ArtifactFS /v1/desired-repos, /v1/events, /v1/warmup-plan, and /v1/credential-env inside the sandbox.\n", {
           headers: { "content-type": "text/plain; charset=utf-8" },
         });
       }
@@ -94,7 +94,7 @@ async function demoStatus(request: Request, env: Env): Promise<Response> {
     "Sandbox container is not ready yet. The status request timed out while waiting for sandbox.exec. Try again in a moment."
   );
   if (!result.success) {
-    return Response.json({ error: result.stderr || "No demo state yet" }, { status: 404 });
+    return Response.json({ error: result.stderr || "No actor-backed demo state yet" }, { status: 404 });
   }
   return new Response(result.stdout, { headers: { "content-type": "application/json; charset=utf-8" } });
 }

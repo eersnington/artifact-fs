@@ -17,6 +17,7 @@ import {
   shortSha,
   stageCount,
   stages,
+  type ArtifactFsEvent,
   type AgentState,
   type RunState,
 } from "./model";
@@ -195,11 +196,16 @@ function Dashboard({ state }: { state: RunState }) {
         {agents.length ? <div className="agent-grid">{agents.map((agent) => <AgentCard key={agent.agentId} agent={agent} />)}</div> : <Empty title="No agents yet" description="The sidecar has not published agent state for this run." size="sm" />}
       </LayerCard>
 
-      <LayerCard className="section-card table-card">
-        <SectionTitle title="Commits" />
-        <CommitTable agents={agents} />
-      </LayerCard>
-    </div>
+        <LayerCard className="section-card table-card">
+          <SectionTitle title="Commits" />
+          <CommitTable agents={agents} />
+        </LayerCard>
+
+        <LayerCard className="section-card table-card">
+          <SectionTitle title="ArtifactFS events" />
+          <EventTable events={state.artifactFsEvents || []} />
+        </LayerCard>
+      </div>
   );
 }
 
@@ -262,6 +268,36 @@ function CommitTable({ agents }: { agents: AgentState[] }) {
             <Table.Cell>{agent.repoName}</Table.Cell>
             <Table.Cell><code>{agent.mountPath}</code></Table.Cell>
             <Table.Cell><code>{shortSha(agent.commit)}</code></Table.Cell>
+          </Table.Row>
+        ))}
+      </Table.Body>
+    </Table>
+  );
+}
+
+function EventTable({ events }: { events: ArtifactFsEvent[] }) {
+  const recent = events.slice(-8).reverse();
+  if (recent.length === 0) {
+    return <Empty title="No events yet" description="Runtime events appear here after the daemon records mount, hydration, status, or overlay changes." size="sm" />;
+  }
+
+  return (
+    <Table>
+      <Table.Header variant="compact">
+        <Table.Row>
+          <Table.Head>Kind</Table.Head>
+          <Table.Head>Repo</Table.Head>
+          <Table.Head>Path</Table.Head>
+          <Table.Head>State</Table.Head>
+        </Table.Row>
+      </Table.Header>
+      <Table.Body>
+        {recent.map((event, index) => (
+          <Table.Row key={event.id || `${event.kind}-${event.repoId}-${index}`}>
+            <Table.Cell>{event.kind}</Table.Cell>
+            <Table.Cell>{event.repoName || event.repoId}</Table.Cell>
+            <Table.Cell>{event.path ? <code>{event.path}</code> : "-"}</Table.Cell>
+            <Table.Cell>{event.state || "-"}</Table.Cell>
           </Table.Row>
         ))}
       </Table.Body>
