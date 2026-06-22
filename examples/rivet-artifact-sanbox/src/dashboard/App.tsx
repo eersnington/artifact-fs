@@ -4,24 +4,22 @@ import { Empty } from "@cloudflare/kumo/components/empty";
 import { Flow } from "@cloudflare/kumo/components/flow";
 import { Input } from "@cloudflare/kumo/components/input";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
-import { Loader } from "@cloudflare/kumo/components/loader";
 import { Table } from "@cloudflare/kumo/components/table";
 import { Text } from "@cloudflare/kumo/components/text";
 import { ArrowSquareOutIcon, CopyIcon } from "@phosphor-icons/react";
 import { useState, useSyncExternalStore, type FormEvent } from "react";
-import { createRunStateStore } from "./run-state-store";
+import { createRunStateStore, type RunStateSnapshot } from "./run-state-store";
 import {
   commitCount,
   formatDuration,
   formatTime,
-  materializedWorkspaceCount,
   phaseBadgeVariant,
   shortSha,
-  stageCount,
-  stages,
+  stageIndex,
   summarizeMilestoneEvents,
-  type ArtifactFsEvent,
+  type AgentPhase,
   type AgentState,
+  type ArtifactFsEvent,
   type MilestoneEvent,
   type RunState,
 } from "./model";
@@ -31,20 +29,26 @@ const sandboxId = normalizeId(params.get("sandboxId") || "demo");
 const token = params.get("token") || "";
 const store = createRunStateStore({ sandboxId, token });
 
+type WorkspaceBranch = {
+  agentId: string;
+  repoName: string;
+  mountPath: string;
+  phase: AgentPhase;
+  step: string;
+  commit: string | null;
+  head: string | null;
+  error: string | null;
+  stage: number;
+};
+
 export function App() {
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
 
   return (
     <main className="dashboard-shell">
       <Header statusUrl={store.getStatusUrl()} state={snapshot.data} />
-      <HeroExplainer state={snapshot.data} />
-      <ProblemSolution />
-      <ArchitectureDiagram state={snapshot.data} />
-      <StartRunPanel hasRun={Boolean(snapshot.data)} />
-
-      {snapshot.status === "loading" ? <LoadingState /> : null}
-      {snapshot.status === "error" ? <ErrorState message={snapshot.error} staleState={snapshot.data} /> : null}
-      {snapshot.data ? <Dashboard state={snapshot.data} /> : null}
+      <SystemStage snapshot={snapshot} />
+      {snapshot.data ? <TechnicalTrace state={snapshot.data} /> : null}
     </main>
   );
 }
@@ -62,7 +66,7 @@ function Header({ statusUrl, state }: { statusUrl: string; state: RunState | nul
     <header className="dashboard-header">
       <div>
         <div className="dashboard-kicker">ArtifactFS sandbox</div>
-        <Text as="h1" variant="heading1">Rivet + ArtifactFS workspace demo</Text>
+        <Text as="h1" variant="heading1">Rivet + ArtifactFS</Text>
       </div>
       <div className="dashboard-header-actions">
         <Badge variant={state ? phaseBadgeVariant(state.state) : "neutral"} appearance="dot">
@@ -75,101 +79,180 @@ function Header({ statusUrl, state }: { statusUrl: string; state: RunState | nul
   );
 }
 
-function HeroExplainer({ state }: { state: RunState | null }) {
-  const agents = state?.agentStates.length || state?.agents || 0;
-
+function SystemStage({ snapshot }: { snapshot: RunStateSnapshot }) {
   return (
-    <section className="hero-panel" aria-label="What this demo shows">
-      <div className="hero-copy">
-        <Badge variant={state ? phaseBadgeVariant(state.state) : "neutral"} appearance="dot">
-          {state ? `current run ${state.state}` : "ready to start"}
-        </Badge>
-        <Text as="h2" variant="heading1">Coordinate many Git workspaces without cloning the repo for every agent.</Text>
-        <Text as="p" variant="secondary">
-          Rivet decides which workspaces should exist. ArtifactFS materializes each one as a writable Git-backed folder. Agents then read, write, and commit independently inside those folders.
-        </Text>
-        <div className="concept-chips" aria-label="Component roles">
-          <span><strong>Rivet</strong> desired state + event history</span>
-          <span><strong>ArtifactFS</strong> Git-backed filesystem</span>
-          <span><strong>Sandbox agents</strong> independent workers</span>
+    <section className="system-stage" aria-label="Live workspace system map">
+      <div className="system-stage-copy">
+        <div>
+          <Text as="h2" variant="heading1">Git workspaces for parallel agents</Text>
+          <Text as="p" variant="secondary">Rivet coordinates desired workspaces. ArtifactFS mounts them as writable folders.</Text>
+        </div>
+        <div className="stage-legend" aria-label="Demo caveats">
+          <span>simulated agents</span>
+          <span>local commits only</span>
+          <span>no GitHub push</span>
         </div>
       </div>
-      <div className="hero-result-card">
-        <span className="metric-label">Current proof</span>
-        <strong>{state ? `${agents} workspaces` : "No run yet"}</strong>
-        <span>{state ? `${commitCount(state)} local commits created from isolated mounted folders.` : "Start a run to boot the sandbox and materialize workspaces."}</span>
+
+      <div className="system-frame">
+        <SystemMap snapshot={snapshot} />
+        <RunControlRail hasRun={Boolean(snapshot.data)} />
       </div>
     </section>
   );
 }
 
-function ProblemSolution() {
-  return (
-    <section className="explain-grid" aria-label="Problem and solution">
-      <LayerCard className="explain-card problem-card">
-        <span className="metric-label">The problem</span>
-        <Text as="h2" variant="heading3">Multiple agents usually mean duplicated Git workspaces.</Text>
-        <Text as="p" variant="secondary">Four agents on one repo often means four clones, duplicated blob downloads, repeated setup, and no durable coordinator tracking lifecycle.</Text>
-      </LayerCard>
-      <LayerCard className="explain-card solution-card">
-        <span className="metric-label">The demo</span>
-        <Text as="h2" variant="heading3">Rivet asks for workspaces; ArtifactFS mounts them.</Text>
-        <Text as="p" variant="secondary">The sidecar publishes one desired workspace per agent. ArtifactFS reconciles that state into writable folders under <code>/workspace/mnt</code>.</Text>
-      </LayerCard>
-    </section>
-  );
-}
-
-function ArchitectureDiagram({ state }: { state: RunState | null }) {
-  const agents = state?.agentStates.length ? state.agentStates : [
-    { agentId: "agent-1", repoName: "agent-1", mountPath: "/workspace/mnt/agent-1", phase: "starting", step: "queued", head: null, commit: null, error: null, updatedAt: 0 } satisfies AgentState,
-    { agentId: "agent-2", repoName: "agent-2", mountPath: "/workspace/mnt/agent-2", phase: "starting", step: "queued", head: null, commit: null, error: null, updatedAt: 0 } satisfies AgentState,
-  ];
+function SystemMap({ snapshot }: { snapshot: RunStateSnapshot }) {
+  const state = snapshot.data;
+  const branches = workspaceBranches(state);
+  const hasError = snapshot.status === "error";
 
   return (
-    <LayerCard className="architecture-card">
-      <div className="section-title">
-        <Text as="h2" variant="heading3">What happens when you press Start</Text>
-        <Text as="p" variant="secondary">The useful part is the handoff: Rivet coordinates desired workspaces, but ArtifactFS owns the local filesystem and Git behavior.</Text>
-      </div>
-      <div className="architecture-diagram" aria-label="Rivet and ArtifactFS architecture diagram">
-        <DiagramNode eyebrow="Input" title="GitHub repo" detail={state?.remote || "cloudflare/sandbox-sdk"} />
-        <DiagramArrow />
-        <DiagramNode eyebrow="Coordinator" title="Rivet sidecar" detail="desired repos + events" />
-        <DiagramArrow />
-        <DiagramNode eyebrow="Filesystem" title="ArtifactFS daemon" detail="mounts writable Git trees" />
-        <DiagramArrow />
-        <div className="workspace-fanout">
-          {agents.slice(0, 4).map((agent) => (
-            <div className="workspace-node" key={agent.agentId}>
-              <strong>{agent.agentId}</strong>
-              <code>{agent.mountPath}</code>
-              <span>{agent.commit ? `commit ${shortSha(agent.commit)}` : "waits for commit"}</span>
-            </div>
+    <div className="system-map">
+      <SystemStatus snapshot={snapshot} />
+      <Flow canvas={false} align="center" className="system-flow">
+        <Flow.Node render={<SourceRepoNode state={state} />} />
+        <Flow.Node render={<RivetControlNode state={state} />} />
+        <Flow.Node render={<ArtifactFsDaemonNode state={state} />} />
+        <Flow.Parallel align="start">
+          {branches.map((branch) => (
+            <Flow.Node key={branch.agentId} disabled={branch.phase === "starting" && !state} render={<WorkspaceLane branch={branch} />} />
           ))}
-        </div>
-      </div>
-    </LayerCard>
-  );
-}
-
-function DiagramNode({ eyebrow, title, detail }: { eyebrow: string; title: string; detail: string }) {
-  return (
-    <div className="diagram-node">
-      <span>{eyebrow}</span>
-      <strong>{title}</strong>
-      <small>{detail}</small>
+        </Flow.Parallel>
+      </Flow>
+      <StageTicks branches={branches} state={state} />
+      {hasError ? <TechnicalStatusError message={snapshot.error} hasStaleData={Boolean(state)} /> : null}
     </div>
   );
 }
 
-function DiagramArrow() {
-  return <span className="diagram-arrow" aria-hidden="true">→</span>;
+function SystemStatus({ snapshot }: { snapshot: RunStateSnapshot }) {
+  const state = snapshot.data;
+  if (snapshot.status === "loading") {
+    return (
+      <div className="system-status neutral">
+        <span>looking for sandbox state</span>
+      </div>
+    );
+  }
+
+  if (snapshot.status === "error") {
+    return (
+      <div className="system-status warning">
+        <span>{state ? "reconnecting to sidecar" : "sidecar not ready"}</span>
+      </div>
+    );
+  }
+
+  if (!state) {
+    return (
+      <div className="system-status neutral">
+        <span>waiting for run</span>
+      </div>
+    );
+  }
+
+  return (
+    <div className="system-status live">
+      <span>{state.state === "done" ? "run complete" : "run live"}</span>
+      <code>{state.runId}</code>
+    </div>
+  );
 }
 
-function StartRunPanel({ hasRun }: { hasRun: boolean }) {
+function SourceRepoNode({ state }: { state: RunState | null }) {
+  return (
+    <div className="system-node source-node">
+      <span className="node-eyebrow">source</span>
+      <strong>{repoLabel(state?.remote)}</strong>
+      <span className="wire-label">branch {state?.branch || "main"}</span>
+    </div>
+  );
+}
+
+function RivetControlNode({ state }: { state: RunState | null }) {
+  const desired = state?.desiredRepos?.length || state?.agentStates.length || state?.agents || 0;
+
+  return (
+    <div className="system-node rivet-node">
+      <span className="node-eyebrow">Rivet</span>
+      <strong>control plane</strong>
+      <span className="node-count">{desired || 2} desired repos</span>
+      <span className="wire-label">desired state</span>
+    </div>
+  );
+}
+
+function ArtifactFsDaemonNode({ state }: { state: RunState | null }) {
+  const mounted = state?.agentStates.filter((agent) => stageIndex(agent) >= 1 || agent.phase === "done").length || 0;
+  const total = state?.agentStates.length || state?.agents || 2;
+
+  return (
+    <div className="system-node artifactfs-node">
+      <span className="node-eyebrow">ArtifactFS</span>
+      <strong>daemon</strong>
+      <span className="node-count">{mounted}/{total} mounted</span>
+      <span className="wire-label">reconcile + mount</span>
+    </div>
+  );
+}
+
+function WorkspaceLane({ branch }: { branch: WorkspaceBranch }) {
+  const hasCommit = Boolean(branch.commit);
+  const isFailed = branch.phase === "failed";
+
+  return (
+    <div className={`workspace-lane ${branch.phase}`}>
+      <div className="workspace-folder-tab">{branch.agentId}</div>
+      <div className="workspace-lane-body">
+        <div className="workspace-lane-topline">
+          <code>{branch.mountPath}</code>
+          <Badge variant={phaseBadgeVariant(branch.phase)} appearance="dot">{branch.phase}</Badge>
+        </div>
+        <div className="workspace-lane-path">
+          <span className="worker-pill">agent worker</span>
+          <span className="lane-connector" aria-hidden="true" />
+          <span className={hasCommit ? "commit-pill complete" : isFailed ? "commit-pill failed" : "commit-pill pending"}>
+            {hasCommit ? `commit ${shortSha(branch.commit)}` : isFailed ? "failed" : branch.step}
+          </span>
+        </div>
+        {branch.error ? <Text as="p" variant="error" size="sm">{branch.error}</Text> : null}
+      </div>
+    </div>
+  );
+}
+
+function StageTicks({ branches, state }: { branches: WorkspaceBranch[]; state: RunState | null }) {
+  const labels = ["desired", "mounted", "hydrated", "written", "committed"];
+  const total = branches.length;
+
+  return (
+    <div className="stage-ticks" aria-label="Run progress by stage">
+      {labels.map((label, index) => {
+        const complete = state ? branches.filter((branch) => branch.stage > index || branch.phase === "done").length : 0;
+        return (
+          <div className={complete === total && total > 0 ? "stage-tick complete" : complete > 0 ? "stage-tick active" : "stage-tick"} key={label}>
+            <span>{label}</span>
+            <strong>{complete}/{total}</strong>
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
+function TechnicalStatusError({ message, hasStaleData }: { message: string; hasStaleData: boolean }) {
+  return (
+    <details className="technical-error inline-error">
+      <summary>{hasStaleData ? "Showing stale data" : "Technical status error"}</summary>
+      <Text as="p" variant="error">{message}</Text>
+    </details>
+  );
+}
+
+function RunControlRail({ hasRun }: { hasRun: boolean }) {
   const [newSandboxId, setNewSandboxId] = useState(defaultSandboxId);
-  const [agents, setAgents] = useState("4");
+  const [agents, setAgents] = useState("2");
   const [remote, setRemote] = useState("https://github.com/cloudflare/sandbox-sdk.git");
   const [branch, setBranch] = useState("main");
   const [status, setStatus] = useState<"idle" | "starting">("idle");
@@ -212,12 +295,12 @@ function StartRunPanel({ hasRun }: { hasRun: boolean }) {
   };
 
   return (
-    <LayerCard className="start-card">
-      <form className="start-form" onSubmit={startRun}>
-        <div className="start-title">
+    <aside className="run-control-rail" aria-label="Run controls">
+      <form className="rail-form" onSubmit={startRun}>
+        <div className="rail-title">
           <div>
-            <Text as="h2" variant="heading3">{hasRun ? "Start another run" : "Start a run"}</Text>
-            <Text as="p" variant="secondary">Boot a sandbox, ask Rivet for one workspace per agent, and let ArtifactFS mount each workspace.</Text>
+            <span>{hasRun ? "Next run" : "Start run"}</span>
+            <strong>Control</strong>
           </div>
           <Badge variant={token ? "neutral" : "error"} appearance="dot">{token ? "ready" : "missing token"}</Badge>
         </div>
@@ -225,165 +308,49 @@ function StartRunPanel({ hasRun }: { hasRun: boolean }) {
         <Input label="Agents" type="number" min="1" max="8" value={agents} onChange={(event) => setAgents(event.currentTarget.value)} />
         <Input label="Remote" value={remote} onChange={(event) => setRemote(event.currentTarget.value)} />
         <Input label="Branch" value={branch} onChange={(event) => setBranch(event.currentTarget.value)} />
-        <Button type="submit" variant="primary" loading={status === "starting"} disabled={!token || status === "starting"}>Start</Button>
+        <Button type="submit" variant="primary" loading={status === "starting"} disabled={!token || status === "starting"}>Start run</Button>
       </form>
       {error ? <Text as="p" variant="error" size="sm">{error}</Text> : null}
-    </LayerCard>
+    </aside>
   );
 }
 
-function LoadingState() {
-  return (
-    <LayerCard className="dashboard-empty-card">
-      <Loader size="lg" aria-label="Loading sandbox state" />
-      <Text as="h2" variant="heading3">Looking for an active sandbox run</Text>
-      <Text as="p" variant="secondary">If this is the first visit, start a run to boot the sandbox container and launch the sidecar.</Text>
-    </LayerCard>
-  );
-}
-
-function ErrorState({ message, staleState }: { message: string; staleState: RunState | null }) {
-  return (
-    <LayerCard className="dashboard-error-card">
-      <Badge variant="warning" appearance="dot">Sandbox not ready</Badge>
-      <Text as="h2" variant="heading3">No active sidecar is answering yet.</Text>
-      <Text as="p" variant="secondary">Start a run to boot the sandbox. If you just started one, the ArtifactFS sidecar usually appears after a short warmup.</Text>
-      <details className="technical-error">
-        <summary>Technical status error</summary>
-        <Text as="p" variant="error">{message}</Text>
-      </details>
-      {staleState ? <Text as="p" variant="secondary">Showing stale data.</Text> : null}
-    </LayerCard>
-  );
-}
-
-function Dashboard({ state }: { state: RunState }) {
-  const agents = state.agentStates;
-  const done = agents.filter((agent) => agent.phase === "done").length;
-  const failed = agents.filter((agent) => agent.phase === "failed").length;
-  const commits = commitCount(state);
+function TechnicalTrace({ state }: { state: RunState }) {
   const elapsed = formatDuration((state.state === "running" ? Date.now() : state.updatedAt) - state.startedAt);
 
   return (
-    <div className="dashboard-stack">
-      <section className="summary-grid" aria-label="Run summary">
-        <MetricCard label="Demo result" value={state.state} badge={state.state} detail={state.runId} />
-        <MetricCard label="Workspaces materialized" value={`${materializedWorkspaceCount(state)}/${agents.length}`} detail={failed ? `${failed} failed` : "writable folders under /workspace/mnt"} />
-        <MetricCard label="Independent commits" value={String(commits)} detail="local sandbox commits, not GitHub pushes" />
-        <MetricCard label="Elapsed time" value={elapsed} detail={formatTime(state.updatedAt)} />
-      </section>
-
-      <ProofCards state={state} />
-
-      <section className="dashboard-grid">
-        <LayerCard className="section-card">
-          <SectionTitle title="Lifecycle" description="Each step shows how far the agents got through the workspace path." />
-          <div className="flow-scroll" aria-label="Run flow scroll area">
-            <Flow canvas={false} align="center" className="run-flow">
-              {stages.map((stage) => (
-                <Flow.Node key={stage.key}>
-                  <span className="flow-node-title">{stage.label}</span>
-                  <span className="flow-node-count">{stageCount(stage, agents)}</span>
-                  <span className="flow-node-description">{stage.description}</span>
-                </Flow.Node>
-              ))}
-            </Flow>
-          </div>
-        </LayerCard>
-
-        <LayerCard className="section-card">
-          <SectionTitle title="Current run" description="This is the run being summarized below. The form above starts a separate next run." />
-          <dl className="facts-list">
-            <Fact label="Sandbox" value={sandboxId} />
-            <Fact label="Run" value={state.runId} />
-            <Fact label="Remote" value={state.remote} />
-            <Fact label="Branch" value={state.branch} />
-          </dl>
-        </LayerCard>
-      </section>
-
-      <LayerCard className="section-card">
-        <SectionTitle title="Workspace proof" description="Each agent received its own ArtifactFS-mounted folder and committed inside it." />
-        {agents.length ? <div className="agent-grid">{agents.map((agent) => <AgentCard key={agent.agentId} agent={agent} />)}</div> : <Empty title="No agents yet" description="The sidecar has not published agent state for this run." size="sm" />}
+    <section className="technical-trace" aria-label="Technical run details">
+      <LayerCard className="section-card trace-facts-card">
+        <SectionTitle title="Run facts" />
+        <dl className="facts-list trace-facts">
+          <Fact label="Sandbox" value={sandboxId} />
+          <Fact label="Run" value={state.runId} />
+          <Fact label="Remote" value={state.remote} />
+          <Fact label="Branch" value={state.branch} />
+          <Fact label="Elapsed" value={elapsed} />
+          <Fact label="Commits" value={String(commitCount(state))} />
+          <Fact label="Updated" value={formatTime(state.updatedAt)} />
+        </dl>
       </LayerCard>
 
-        <LayerCard className="section-card table-card">
-          <SectionTitle title="Local commits" description="These hashes were created inside the sandbox working trees. Nothing was pushed to GitHub." />
-          <CommitTable agents={agents} />
-        </LayerCard>
-
-        <LayerCard className="section-card table-card">
-          <SectionTitle title="ArtifactFS evidence" description="Deduped daemon milestones. Raw JSON is available from the button above." />
-          <EventTable events={state.artifactFsEvents || []} />
-        </LayerCard>
-      </div>
-  );
-}
-
-function ProofCards({ state }: { state: RunState }) {
-  const agents = state.agentStates;
-  const commits = agents.filter((agent) => agent.commit);
-  const desiredRepos = state.desiredRepos || [];
-
-  return (
-    <section className="proof-grid" aria-label="What this run proves">
-      <LayerCard className="proof-card">
-        <span className="metric-label">Proof 1</span>
-        <Text as="h2" variant="heading3">Rivet coordinated workspace creation</Text>
-        <Text as="p" variant="secondary">Desired state contains {desiredRepos.length || agents.length} workspace requests, one per agent.</Text>
+      <LayerCard className="section-card table-card">
+        <SectionTitle title="Local commits" />
+        <CommitTable agents={state.agentStates} />
       </LayerCard>
-      <LayerCard className="proof-card">
-        <span className="metric-label">Proof 2</span>
-        <Text as="h2" variant="heading3">ArtifactFS materialized writable folders</Text>
-        <Text as="p" variant="secondary">Mounted paths include {agents[0]?.mountPath ? <code>{agents[0].mountPath}</code> : "agent folders under /workspace/mnt"}.</Text>
-      </LayerCard>
-      <LayerCard className="proof-card">
-        <span className="metric-label">Proof 3</span>
-        <Text as="h2" variant="heading3">Agents produced independent commits</Text>
-        <Text as="p" variant="secondary">{commits.length ? commits.map((agent) => shortSha(agent.commit)).join(" and ") : "Commits appear here when agents finish."}</Text>
-      </LayerCard>
-      <LayerCard className="proof-card caveat-card">
-        <span className="metric-label">Not shown</span>
-        <Text as="p" variant="secondary">This demo does not push to GitHub, create PRs, or run real AI agents. It proves the workspace coordination and filesystem path.</Text>
+
+      <LayerCard className="section-card table-card">
+        <SectionTitle title="ArtifactFS evidence" />
+        <EventTable events={state.artifactFsEvents || []} />
       </LayerCard>
     </section>
   );
 }
 
-function MetricCard({ label, value, detail, badge }: { label: string; value: string; detail: string; badge?: RunState["state"] }) {
-  return (
-    <LayerCard className="metric-card">
-      <span className="metric-label">{label}</span>
-      {badge ? <Badge variant={phaseBadgeVariant(badge)} appearance="dot">{value}</Badge> : <Text as="span" variant="heading2">{value}</Text>}
-      <span className="metric-detail">{detail}</span>
-    </LayerCard>
-  );
-}
-
-function SectionTitle({ title, description }: { title: string; description?: string }) {
+function SectionTitle({ title }: { title: string }) {
   return (
     <div className="section-title">
       <Text as="h2" variant="heading3">{title}</Text>
-      {description ? <Text as="p" variant="secondary">{description}</Text> : null}
     </div>
-  );
-}
-
-function AgentCard({ agent }: { agent: AgentState }) {
-  return (
-    <LayerCard>
-      <LayerCard.Secondary>
-        <span>{agent.agentId}</span>
-        <Badge variant={phaseBadgeVariant(agent.phase)} appearance="dot">{agent.phase}</Badge>
-      </LayerCard.Secondary>
-      <LayerCard.Primary>
-        <dl className="facts-list compact">
-          <Fact label="Mount" value={agent.mountPath} />
-          <Fact label="Commit" value={shortSha(agent.commit)} />
-        </dl>
-        {agent.error ? <Text as="p" variant="error" size="sm">{agent.error}</Text> : null}
-      </LayerCard.Primary>
-    </LayerCard>
   );
 }
 
@@ -430,16 +397,16 @@ function EventTable({ events }: { events: ArtifactFsEvent[] }) {
           <Table.Head>Kind</Table.Head>
           <Table.Head>Repo</Table.Head>
           <Table.Head>Evidence</Table.Head>
-          <Table.Head>Why it matters</Table.Head>
+          <Table.Head>Count</Table.Head>
         </Table.Row>
       </Table.Header>
       <Table.Body>
         {milestones.map((event: MilestoneEvent) => (
           <Table.Row key={event.key}>
-            <Table.Cell>{event.kind}{event.count > 1 ? ` ×${event.count}` : ""}</Table.Cell>
+            <Table.Cell>{event.kind}</Table.Cell>
             <Table.Cell>{event.repo}</Table.Cell>
             <Table.Cell>{event.detail === "-" ? "-" : <code>{event.detail}</code>}</Table.Cell>
-            <Table.Cell>{event.why}</Table.Cell>
+            <Table.Cell>{event.count}</Table.Cell>
           </Table.Row>
         ))}
       </Table.Body>
@@ -454,6 +421,55 @@ function Fact({ label, value }: { label: string; value: string }) {
       <dd>{value}</dd>
     </div>
   );
+}
+
+function workspaceBranches(state: RunState | null): WorkspaceBranch[] {
+  if (!state) {
+    return ghostBranches(2);
+  }
+  if (state.agentStates.length === 0) {
+    return ghostBranches(state.agents || 2);
+  }
+  return state.agentStates.map((agent) => ({
+    agentId: agent.agentId,
+    repoName: agent.repoName,
+    mountPath: agent.mountPath,
+    phase: agent.phase,
+    step: agent.step,
+    commit: agent.commit,
+    head: agent.head,
+    error: agent.error,
+    stage: stageIndex(agent),
+  }));
+}
+
+function ghostBranches(count: number): WorkspaceBranch[] {
+  return Array.from({ length: Math.max(1, Math.min(count, 4)) }, (_, index) => {
+    const id = `agent-${index + 1}`;
+    return {
+      agentId: id,
+      repoName: id,
+      mountPath: `/workspace/mnt/${id}`,
+      phase: "starting",
+      step: "waiting for run",
+      commit: null,
+      head: null,
+      error: null,
+      stage: 0,
+    };
+  });
+}
+
+function repoLabel(remote: string | null | undefined): string {
+  if (!remote) {
+    return "cloudflare/sandbox-sdk";
+  }
+  try {
+    const url = new URL(remote);
+    return url.pathname.replace(/^\//, "").replace(/\.git$/, "") || remote;
+  } catch {
+    return remote.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
+  }
 }
 
 function normalizeId(value: string): string {
