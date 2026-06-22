@@ -89,6 +89,32 @@ func TestBlobToCacheBinarySafe(t *testing.T) {
 	}
 }
 
+func TestGitURLAndEnvUsesRuntimeCredentialLease(t *testing.T) {
+	cfg := model.RepoConfig{
+		RemoteURL:        "https://user:secret@example.invalid/repo.git",
+		GitSafeRemoteURL: "https://example.invalid/repo.git",
+		GitCredentialEnv: []string{"GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_COUNT=1"},
+	}
+	safeURL, env := gitURLAndEnv(cfg)
+	if safeURL != "https://example.invalid/repo.git" {
+		t.Fatalf("safeURL = %q", safeURL)
+	}
+	if len(env) != 2 {
+		t.Fatalf("env len = %d, want 2", len(env))
+	}
+}
+
+func TestGitURLAndEnvFallsBackToRedactedCredentialHelper(t *testing.T) {
+	cfg := model.RepoConfig{RemoteURL: "https://user:secret@example.invalid/repo.git"}
+	safeURL, env := gitURLAndEnv(cfg)
+	if strings.Contains(safeURL, "secret") || strings.Contains(safeURL, "user:secret") {
+		t.Fatalf("safeURL leaked credentials: %q", safeURL)
+	}
+	if len(env) == 0 {
+		t.Fatalf("expected credential helper env")
+	}
+}
+
 func TestReadBlobRespectsMaxBytes(t *testing.T) {
 	t.Parallel()
 	tmp := t.TempDir()

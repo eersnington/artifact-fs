@@ -14,20 +14,23 @@ var ErrBlobTooLarge = errors.New("blob too large")
 type RepoID string
 
 type RepoConfig struct {
-	ID                RepoID
-	Name              string
-	MountRoot         string
-	MountPath         string
-	RemoteURL         string
-	RemoteURLRedacted string
-	Branch            string
-	RefreshInterval   time.Duration
-	GitDir            string
-	OverlayDir        string
-	BlobCacheDir      string
-	MetaDBPath        string
-	OverlayDBPath     string
-	Enabled           bool
+	ID                 RepoID
+	Name               string
+	MountRoot          string
+	MountPath          string
+	RemoteURL          string
+	RemoteURLRedacted  string
+	RemoteURLSecretRef string
+	GitSafeRemoteURL   string
+	GitCredentialEnv   []string
+	Branch             string
+	RefreshInterval    time.Duration
+	GitDir             string
+	OverlayDir         string
+	BlobCacheDir       string
+	MetaDBPath         string
+	OverlayDBPath      string
+	Enabled            bool
 }
 
 type RepoRuntimeState struct {

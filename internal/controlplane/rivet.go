@@ -164,6 +164,7 @@ type repoConfigWire struct {
 	MountPath              string `json:"mountPath,omitempty"`
 	RemoteURL              string `json:"remoteUrl,omitempty"`
 	RemoteURLRedacted      string `json:"remoteUrlRedacted,omitempty"`
+	RemoteURLSecretRef     string `json:"remoteUrlSecretRef,omitempty"`
 	Branch                 string `json:"branch"`
 	RefreshIntervalSeconds int64  `json:"refreshIntervalSeconds,omitempty"`
 	GitDir                 string `json:"gitDir,omitempty"`
@@ -176,20 +177,21 @@ type repoConfigWire struct {
 
 func (r repoConfigWire) toModel() model.RepoConfig {
 	return model.RepoConfig{
-		ID:                model.RepoID(r.ID),
-		Name:              r.Name,
-		MountRoot:         r.MountRoot,
-		MountPath:         r.MountPath,
-		RemoteURL:         r.RemoteURL,
-		RemoteURLRedacted: r.RemoteURLRedacted,
-		Branch:            r.Branch,
-		RefreshInterval:   time.Duration(r.RefreshIntervalSeconds) * time.Second,
-		GitDir:            r.GitDir,
-		OverlayDir:        r.OverlayDir,
-		BlobCacheDir:      r.BlobCacheDir,
-		MetaDBPath:        r.MetaDBPath,
-		OverlayDBPath:     r.OverlayDBPath,
-		Enabled:           r.Enabled,
+		ID:                 model.RepoID(r.ID),
+		Name:               r.Name,
+		MountRoot:          r.MountRoot,
+		MountPath:          r.MountPath,
+		RemoteURL:          r.RemoteURL,
+		RemoteURLRedacted:  r.RemoteURLRedacted,
+		RemoteURLSecretRef: r.RemoteURLSecretRef,
+		Branch:             r.Branch,
+		RefreshInterval:    time.Duration(r.RefreshIntervalSeconds) * time.Second,
+		GitDir:             r.GitDir,
+		OverlayDir:         r.OverlayDir,
+		BlobCacheDir:       r.BlobCacheDir,
+		MetaDBPath:         r.MetaDBPath,
+		OverlayDBPath:      r.OverlayDBPath,
+		Enabled:            r.Enabled,
 	}
 }
 

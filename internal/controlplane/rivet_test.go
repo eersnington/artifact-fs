@@ -32,6 +32,7 @@ func TestRivetDesiredRepos(t *testing.T) {
 				ID:                     "repo-1",
 				Name:                   "repo-1",
 				RemoteURL:              "https://example.invalid/repo.git",
+				RemoteURLSecretRef:     "secret/repo-1",
 				Branch:                 "main",
 				RefreshIntervalSeconds: 45,
 				Enabled:                true,
@@ -51,6 +52,9 @@ func TestRivetDesiredRepos(t *testing.T) {
 	repo := repos[0]
 	if repo.ID != "repo-1" || repo.Name != "repo-1" || repo.Branch != "main" {
 		t.Fatalf("unexpected repo: %#v", repo)
+	}
+	if repo.RemoteURLSecretRef != "secret/repo-1" {
+		t.Fatalf("RemoteURLSecretRef = %q", repo.RemoteURLSecretRef)
 	}
 	if repo.RefreshInterval != 45*time.Second {
 		t.Fatalf("RefreshInterval = %s, want 45s", repo.RefreshInterval)

@@ -358,6 +358,16 @@ func (s *Service) FetchNow(ctx context.Context, name string) error {
 	if err != nil {
 		return err
 	}
+	cfg, err = s.repoWithCredentialLease(ctx, cfg)
+	if err != nil {
+		s.recordEvent(controlplane.RuntimeEvent{
+			RepoID:   cfg.ID,
+			RepoName: cfg.Name,
+			Kind:     controlplane.EventFetchFailed,
+			Error:    auth.RedactString(err.Error()),
+		})
+		return err
+	}
 	if err := s.git.Fetch(ctx, cfg); err != nil {
 		s.recordEvent(controlplane.RuntimeEvent{
 			RepoID:   cfg.ID,
@@ -421,6 +431,11 @@ func (s *Service) ensurePreparedRepo(ctx context.Context, cfg model.RepoConfig) 
 	if err := os.MkdirAll(cfg.MountPath, 0o755); err != nil {
 		return nil, "", "", 0, err
 	}
+	credentialedCfg, err := s.repoWithCredentialLease(ctx, cfg)
+	if err != nil {
+		return nil, "", "", 0, err
+	}
+	cfg = credentialedCfg
 	if err := s.git.CloneBlobless(ctx, cfg); err != nil {
 		return nil, "", "", 0, err
 	}
@@ -441,6 +456,30 @@ func (s *Service) ensurePreparedRepo(ctx context.Context, cfg model.RepoConfig) 
 		}
 	}
 	return snap, headOID, headRef, gen, nil
+}
+
+func (s *Service) repoWithCredentialLease(ctx context.Context, cfg model.RepoConfig) (model.RepoConfig, error) {
+	if cfg.RemoteURLSecretRef == "" {
+		return cfg, nil
+	}
+	if s.coordinator == nil {
+		return cfg, fmt.Errorf("repo %s requires remote credential secret %q, but no controlplane coordinator is configured; configure a Rivet controlplane or remove the secret ref", cfg.Name, cfg.RemoteURLSecretRef)
+	}
+	cred, err := s.coordinator.CredentialEnv(ctx, controlplane.CredentialRequest{
+		RepoID:    cfg.ID,
+		RepoName:  cfg.Name,
+		RemoteURL: cfg.RemoteURL,
+		SecretRef: cfg.RemoteURLSecretRef,
+	})
+	if err != nil {
+		return cfg, fmt.Errorf("repo %s credential lease failed for secret ref %q; mount/fetch was not attempted and local state is unchanged: %w", cfg.Name, cfg.RemoteURLSecretRef, err)
+	}
+	if strings.TrimSpace(cred.SafeRemoteURL) == "" {
+		return cfg, fmt.Errorf("repo %s credential lease for secret ref %q did not include a safe remote URL; mount/fetch was not attempted and local state is unchanged", cfg.Name, cfg.RemoteURLSecretRef)
+	}
+	cfg.GitSafeRemoteURL = cred.SafeRemoteURL
+	cfg.GitCredentialEnv = append([]string(nil), cred.Env...)
+	return cfg, nil
 }
 
 // mountRepo opens all stores, starts the FUSE server, watcher, and refresh
@@ -694,7 +733,10 @@ func (s *Service) refreshLoop(rt *repoRuntime) {
 			return
 		case <-ticker.C:
 			ctx, cancel := context.WithTimeout(rt.ctx, 30*time.Second)
-			err := s.git.Fetch(ctx, rt.cfg)
+			cfg, err := s.repoWithCredentialLease(ctx, rt.cfg)
+			if err == nil {
+				err = s.git.Fetch(ctx, cfg)
+			}
 			if err != nil {
 				redactedErr := auth.RedactString(err.Error())
 				s.mu.Lock()

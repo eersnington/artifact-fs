@@ -6,6 +6,7 @@ import (
 	"io"
 	"log/slog"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -17,14 +18,16 @@ import (
 )
 
 type fakeCoordinator struct {
-	desired     []model.RepoConfig
-	desiredErr  error
-	warmupPlan  controlplane.WarmupPlan
-	warmupErr   error
-	events      chan controlplane.RuntimeEvent
-	recordDelay time.Duration
-	recordErr   error
-	closed      bool
+	desired       []model.RepoConfig
+	desiredErr    error
+	warmupPlan    controlplane.WarmupPlan
+	warmupErr     error
+	credential    controlplane.CredentialEnv
+	credentialErr error
+	events        chan controlplane.RuntimeEvent
+	recordDelay   time.Duration
+	recordErr     error
+	closed        bool
 }
 
 func (f *fakeCoordinator) DesiredRepos(context.Context, controlplane.HostInfo) ([]model.RepoConfig, error) {
@@ -63,7 +66,10 @@ func (f *fakeCoordinator) WarmupPlan(context.Context, controlplane.WarmupRequest
 }
 
 func (f *fakeCoordinator) CredentialEnv(context.Context, controlplane.CredentialRequest) (controlplane.CredentialEnv, error) {
-	return controlplane.CredentialEnv{}, nil
+	if f.credentialErr != nil {
+		return controlplane.CredentialEnv{}, f.credentialErr
+	}
+	return f.credential, nil
 }
 
 func (f *fakeCoordinator) Close() error {
@@ -223,6 +229,46 @@ func TestWarmupAfterMountContinuesWhenCoordinatorFails(t *testing.T) {
 
 	if depth := rt.hydrator.QueueDepth("repo"); depth != 0 {
 		t.Fatalf("QueueDepth = %d, want 0", depth)
+	}
+}
+
+func TestRepoWithCredentialLeaseUsesCoordinator(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, ctx)
+	defer svc.Close()
+	svc.SetCoordinator(&fakeCoordinator{credential: controlplane.CredentialEnv{
+		SafeRemoteURL: "https://example.invalid/repo.git",
+		Env:           []string{"GIT_TERMINAL_PROMPT=0", "GIT_CONFIG_COUNT=1"},
+	}})
+
+	cfg, err := svc.repoWithCredentialLease(ctx, model.RepoConfig{
+		ID:                 "repo",
+		Name:               "repo",
+		RemoteURLSecretRef: "secret/repo",
+	})
+	if err != nil {
+		t.Fatalf("repoWithCredentialLease returned error: %v", err)
+	}
+	if cfg.GitSafeRemoteURL != "https://example.invalid/repo.git" {
+		t.Fatalf("GitSafeRemoteURL = %q", cfg.GitSafeRemoteURL)
+	}
+	if len(cfg.GitCredentialEnv) != 2 {
+		t.Fatalf("GitCredentialEnv len = %d, want 2", len(cfg.GitCredentialEnv))
+	}
+}
+
+func TestRepoWithCredentialLeaseFailsWithoutSafeURL(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, ctx)
+	defer svc.Close()
+	svc.SetCoordinator(&fakeCoordinator{credential: controlplane.CredentialEnv{Env: []string{"GIT_TERMINAL_PROMPT=0"}}})
+
+	_, err := svc.repoWithCredentialLease(ctx, model.RepoConfig{ID: "repo", Name: "repo", RemoteURLSecretRef: "secret/repo"})
+	if err == nil {
+		t.Fatalf("repoWithCredentialLease returned nil error")
+	}
+	if !strings.Contains(err.Error(), "safe remote URL") {
+		t.Fatalf("error %q did not explain missing safe URL", err.Error())
 	}
 }
 

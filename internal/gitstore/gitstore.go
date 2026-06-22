@@ -80,7 +80,7 @@ func (s *Store) CloneBlobless(ctx context.Context, cfg model.RepoConfig) error {
 
 	// Strip credentials from the CLI-visible URL; pass them via a credential helper
 	// so they don't appear in ps output.
-	safeURL, credHelper := credentialEnv(cfg.RemoteURL)
+	safeURL, credHelper := gitURLAndEnv(cfg)
 
 	args := []string{"clone", "--filter=blob:none", "--no-checkout", "--single-branch", "--branch", cfg.Branch, safeURL, target}
 	if _, err := runGitWithEnv(ctx, "", credHelper, args...); err != nil {
@@ -97,7 +97,7 @@ func (s *Store) CloneBlobless(ctx context.Context, cfg model.RepoConfig) error {
 }
 
 func (s *Store) Fetch(ctx context.Context, repo model.RepoConfig) error {
-	_, err := runGit(ctx, repo.GitDir, "fetch", "origin")
+	_, err := runGitWithEnv(ctx, repo.GitDir, repo.GitCredentialEnv, "fetch", "origin")
 	return err
 }
 
@@ -633,6 +633,16 @@ func runGitWithEnv(ctx context.Context, gitDir string, extraEnv []string, args .
 		msg = auth.RedactString(err.Error())
 	}
 	return out, errors.New(msg)
+}
+
+func gitURLAndEnv(cfg model.RepoConfig) (safeURL string, env []string) {
+	if cfg.GitSafeRemoteURL != "" || len(cfg.GitCredentialEnv) > 0 {
+		if cfg.GitSafeRemoteURL != "" {
+			return cfg.GitSafeRemoteURL, cfg.GitCredentialEnv
+		}
+		return cfg.RemoteURL, cfg.GitCredentialEnv
+	}
+	return credentialEnv(cfg.RemoteURL)
 }
 
 // credentialEnv returns a sanitized URL (safe for ps) and env vars that
