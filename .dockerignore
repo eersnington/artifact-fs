@@ -12,3 +12,11 @@
 !examples/cloudflare-sandbox-sdk
 !examples/cloudflare-sandbox-sdk/container_src
 !examples/cloudflare-sandbox-sdk/container_src/**
+!examples/rivet-artifact-sanbox
+!examples/rivet-artifact-sanbox/Dockerfile
+!examples/rivet-artifact-sanbox/container_src
+!examples/rivet-artifact-sanbox/container_src/**
+examples/rivet-artifact-sanbox/node_modules
+examples/rivet-artifact-sanbox/node_modules/**
+examples/rivet-artifact-sanbox/container_src/demo-rivet/node_modules
+examples/rivet-artifact-sanbox/container_src/demo-rivet/node_modules/**

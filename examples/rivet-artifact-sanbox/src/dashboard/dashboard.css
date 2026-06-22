@@ -1,0 +1,248 @@
+:root {
+  color-scheme: light;
+  background: #f8f8f7;
+  color: #171717;
+  font-family: Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  background: #f8f8f7;
+}
+
+code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 0.88em;
+}
+
+.dashboard-shell {
+  width: min(1180px, calc(100% - 40px));
+  margin: 0 auto;
+  padding: 32px 0 48px;
+}
+
+.dashboard-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 24px;
+  align-items: end;
+  margin-bottom: 12px;
+}
+
+.dashboard-kicker {
+  margin-bottom: 8px;
+  color: #6b625a;
+  font-size: 12px;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.dashboard-header-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  justify-content: flex-end;
+  align-items: center;
+}
+
+.dashboard-stack {
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+
+.start-card {
+  margin-bottom: 16px;
+  padding: 14px;
+}
+
+.start-form {
+  display: grid;
+  grid-template-columns: 1.15fr 0.45fr 1.55fr 0.55fr auto;
+  gap: 10px;
+  align-items: end;
+}
+
+.start-title {
+  display: flex;
+  grid-column: 1 / -1;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.section-card,
+.dashboard-empty-card,
+.dashboard-error-card {
+  padding: 18px;
+}
+
+.metric-card {
+  display: flex;
+  min-height: 104px;
+  flex-direction: column;
+  gap: 8px;
+  justify-content: center;
+  padding: 16px;
+}
+
+.metric-label {
+  color: #6b625a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.metric-detail {
+  color: #6b625a;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 12px;
+}
+
+.dashboard-empty-card,
+.dashboard-error-card {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  align-items: flex-start;
+}
+
+.dashboard-grid {
+  display: grid;
+  grid-template-columns: minmax(0, 1.35fr) minmax(300px, 0.65fr);
+  gap: 16px;
+}
+
+.section-title {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+  margin-bottom: 16px;
+}
+
+.facts-list {
+  display: grid;
+  gap: 12px;
+  margin: 16px 0 0;
+}
+
+.facts-list.compact {
+  margin-top: 8px;
+  gap: 8px;
+}
+
+.fact {
+  min-width: 0;
+}
+
+.fact dt {
+  color: #6b625a;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+}
+
+.fact dd {
+  margin: 2px 0 0;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+  font-size: 13px;
+}
+
+.flow-scroll {
+  max-width: 100%;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 18px 0 10px;
+  scrollbar-gutter: stable;
+}
+
+.flow-scroll::-webkit-scrollbar {
+  height: 10px;
+}
+
+.flow-scroll::-webkit-scrollbar-thumb {
+  border: 2px solid transparent;
+  border-radius: 999px;
+  background: #c7c1b8;
+  background-clip: content-box;
+}
+
+.run-flow {
+  min-width: 920px;
+  width: max-content;
+  padding: 0 8px;
+}
+
+.flow-node-title,
+.flow-node-count {
+  display: block;
+}
+
+.flow-node-title {
+  font-weight: 650;
+}
+
+.flow-node-count {
+  margin-top: 2px;
+  color: #6b625a;
+  font-size: 12px;
+}
+
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+}
+
+.table-card {
+  overflow-x: auto;
+}
+
+@media (max-width: 960px) {
+  .dashboard-header,
+  .dashboard-grid {
+    grid-template-columns: 1fr;
+  }
+
+  .dashboard-header-actions {
+    justify-content: flex-start;
+  }
+
+  .summary-grid,
+  .agent-grid {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .start-form {
+    grid-template-columns: 1fr 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .dashboard-shell {
+    width: min(100% - 24px, 1180px);
+    padding-top: 18px;
+  }
+
+  .summary-grid,
+  .agent-grid,
+  .start-form {
+    grid-template-columns: 1fr;
+  }
+}

@@ -1,11 +1,18 @@
 {
   "$schema": "./node_modules/wrangler/config-schema.json",
   "name": "rivet-artifact-sanbox",
+  "account_id": "24de2a617a6739ba3ae9eea152a254a5",
   "main": "src/index.ts",
   "compatibility_date": "2026-03-30",
   "compatibility_flags": ["nodejs_compat"],
   "observability": {
     "enabled": true
+  },
+  "assets": {
+    "directory": "./dist/dashboard",
+    "binding": "ASSETS",
+    "not_found_handling": "none",
+    "run_worker_first": ["/demo/*"]
   },
   "vars": {
     "SANDBOX_API_TOKEN": "local-dev-token"
@@ -16,7 +23,7 @@
       "image": "./Dockerfile",
       "image_build_context": "../../",
       "instance_type": "basic",
-      "max_instances": 1
+      "max_instances": 4
     }
   ],
   "durable_objects": {

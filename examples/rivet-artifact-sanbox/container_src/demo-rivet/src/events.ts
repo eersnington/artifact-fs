@@ -2,6 +2,7 @@ import { mkdir, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
 
 const demoDir = process.env.DEMO_DIR ?? "/tmp/rivet-artifact-demo";
+let stateWriteSequence = 0;
 
 export type AgentState = {
   agentId: string;
@@ -29,7 +30,8 @@ export type RunState = {
 
 export async function writeState(state: RunState): Promise<void> {
   await mkdir(demoDir, { recursive: true });
-  const tmp = path.join(demoDir, `state.json.${process.pid}.${Date.now()}.tmp`);
+  stateWriteSequence += 1;
+  const tmp = path.join(demoDir, `state.json.${process.pid}.${Date.now()}.${stateWriteSequence}.tmp`);
   await writeFile(tmp, `${JSON.stringify(state, null, 2)}\n`);
   await rename(tmp, path.join(demoDir, "state.json"));
 }

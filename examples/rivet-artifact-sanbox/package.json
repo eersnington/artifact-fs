@@ -4,16 +4,27 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "deploy": "wrangler deploy",
-    "dev": "wrangler dev",
-    "start": "wrangler dev",
+    "build:dashboard": "vite build --config vite.dashboard.config.ts",
+    "deploy": "bun run build:dashboard && wrangler deploy",
+    "dev": "bun run build:dashboard && wrangler dev",
+    "start": "bun run dev",
     "typecheck": "tsc --noEmit"
   },
   "devDependencies": {
     "@cloudflare/sandbox": "0.8.1",
     "@cloudflare/workers-types": "^4.20260320.0",
     "@types/node": "^24.10.1",
+    "@types/react": "^19.0.0",
+    "@types/react-dom": "^19.0.0",
+    "@vitejs/plugin-react": "^5.1.4",
     "typescript": "^5.9.3",
+    "vite": "^7.0.0",
     "wrangler": "^4.76.0"
+  },
+  "dependencies": {
+    "@cloudflare/kumo": "2.5.2",
+    "@phosphor-icons/react": "^2.1.10",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0"
   }
 }
