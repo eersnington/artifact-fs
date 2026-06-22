@@ -25,7 +25,11 @@ import (
 	"github.com/cloudflare/artifact-fs/internal/watcher"
 )
 
-const DefaultHydrationConcurrency = 4
+const (
+	DefaultHydrationConcurrency = 4
+	defaultWarmupMaxFiles       = 128
+	defaultWarmupMaxBytes       = 64 << 20
+)
 
 type Service struct {
 	root                 string
@@ -515,6 +519,7 @@ func (s *Service) mountRepo(ctx context.Context, cfg model.RepoConfig) error {
 		state:    newRuntimeState(cfg.ID, headOID, headRef, gen),
 	}
 	s.startRuntime(rt)
+	s.warmupAfterMount(ctx, rt)
 	s.recordEvent(controlplane.RuntimeEvent{
 		RepoID:     cfg.ID,
 		RepoName:   cfg.Name,
@@ -525,6 +530,89 @@ func (s *Service) mountRepo(ctx context.Context, cfg model.RepoConfig) error {
 	})
 
 	return nil
+}
+
+func (s *Service) warmupAfterMount(ctx context.Context, rt *repoRuntime) {
+	if s.coordinator == nil || rt == nil || rt.hydrator == nil || rt.snapshot == nil || rt.resolver == nil {
+		return
+	}
+	gen := rt.resolver.Generation()
+	plan, err := s.coordinator.WarmupPlan(ctx, controlplane.WarmupRequest{
+		RepoID:     rt.cfg.ID,
+		RepoName:   rt.cfg.Name,
+		HeadOID:    rt.state.CurrentHEADOID,
+		HeadRef:    rt.state.CurrentHEADRef,
+		Generation: gen,
+		MaxFiles:   defaultWarmupMaxFiles,
+		MaxBytes:   defaultWarmupMaxBytes,
+	})
+	if err != nil {
+		s.logger.Warn("controlplane warmup plan unavailable", "repo", rt.cfg.Name, "error", auth.RedactString(err.Error()))
+		return
+	}
+	var accepted int
+	var bytes int64
+	for _, task := range plan.Tasks {
+		if accepted >= defaultWarmupMaxFiles {
+			break
+		}
+		task, node, ok := s.validateWarmupTask(rt, gen, task)
+		if !ok {
+			continue
+		}
+		if node.SizeState == "known" {
+			if node.SizeBytes > defaultWarmupMaxBytes {
+				continue
+			}
+			if bytes+node.SizeBytes > defaultWarmupMaxBytes {
+				break
+			}
+			bytes += node.SizeBytes
+		}
+		rt.hydrator.Enqueue(task)
+		accepted++
+		s.recordEvent(controlplane.RuntimeEvent{
+			RepoID:     rt.cfg.ID,
+			RepoName:   rt.cfg.Name,
+			Kind:       controlplane.EventHydrationQueued,
+			HeadOID:    rt.state.CurrentHEADOID,
+			HeadRef:    rt.state.CurrentHEADRef,
+			Generation: gen,
+			Path:       task.Path,
+			ObjectOID:  task.ObjectOID,
+			SizeBytes:  node.SizeBytes,
+		})
+	}
+}
+
+func (s *Service) validateWarmupTask(rt *repoRuntime, gen int64, task model.HydrationTask) (model.HydrationTask, model.BaseNode, bool) {
+	if task.RepoID != "" && task.RepoID != rt.cfg.ID {
+		return model.HydrationTask{}, model.BaseNode{}, false
+	}
+	path := model.CleanPath(task.Path)
+	if path == "." {
+		return model.HydrationTask{}, model.BaseNode{}, false
+	}
+	node, ok := rt.snapshot.GetNode(gen, path)
+	if !ok || node.Type != "file" || node.ObjectOID == "" {
+		return model.HydrationTask{}, model.BaseNode{}, false
+	}
+	if task.ObjectOID != "" && task.ObjectOID != node.ObjectOID {
+		return model.HydrationTask{}, model.BaseNode{}, false
+	}
+	if task.Priority <= 0 {
+		task.Priority = hydrator.ClassifyPriority(path)
+	}
+	if task.Reason == "" {
+		task.Reason = "actor warmup"
+	}
+	if task.EnqueuedAt.IsZero() {
+		task.EnqueuedAt = time.Now()
+	}
+	task.RepoID = rt.cfg.ID
+	task.Path = path
+	task.ObjectOID = node.ObjectOID
+	return task, node, true
 }
 
 func (s *Service) onHEADChanged(ctx context.Context, rt *repoRuntime) {

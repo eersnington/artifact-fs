@@ -10,12 +10,17 @@ import (
 	"time"
 
 	"github.com/cloudflare/artifact-fs/internal/controlplane"
+	"github.com/cloudflare/artifact-fs/internal/fusefs"
+	"github.com/cloudflare/artifact-fs/internal/hydrator"
 	"github.com/cloudflare/artifact-fs/internal/model"
+	"github.com/cloudflare/artifact-fs/internal/snapshot"
 )
 
 type fakeCoordinator struct {
 	desired     []model.RepoConfig
 	desiredErr  error
+	warmupPlan  controlplane.WarmupPlan
+	warmupErr   error
 	events      chan controlplane.RuntimeEvent
 	recordDelay time.Duration
 	recordErr   error
@@ -51,7 +56,10 @@ func (f *fakeCoordinator) RecordEvent(ctx context.Context, event controlplane.Ru
 }
 
 func (f *fakeCoordinator) WarmupPlan(context.Context, controlplane.WarmupRequest) (controlplane.WarmupPlan, error) {
-	return controlplane.WarmupPlan{}, nil
+	if f.warmupErr != nil {
+		return controlplane.WarmupPlan{}, f.warmupErr
+	}
+	return f.warmupPlan, nil
 }
 
 func (f *fakeCoordinator) CredentialEnv(context.Context, controlplane.CredentialRequest) (controlplane.CredentialEnv, error) {
@@ -167,6 +175,81 @@ func TestRecordEventDoesNotBlockOnSlowCoordinator(t *testing.T) {
 	svc.recordEvent(controlplane.RuntimeEvent{RepoID: "repo", RepoName: "repo", Kind: controlplane.EventMountReady})
 	if elapsed := time.Since(start); elapsed > 50*time.Millisecond {
 		t.Fatalf("recordEvent blocked for %s", elapsed)
+	}
+}
+
+func TestWarmupAfterMountEnqueuesValidatedTasks(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, ctx)
+	defer svc.Close()
+	events := make(chan controlplane.RuntimeEvent, 4)
+	svc.SetCoordinator(&fakeCoordinator{
+		events: events,
+		warmupPlan: controlplane.WarmupPlan{Tasks: []model.HydrationTask{
+			{RepoID: "repo", Path: "/README.md", ObjectOID: "readme-oid", Priority: 900, Reason: "test"},
+			{RepoID: "repo", Path: "missing.txt", ObjectOID: "missing-oid", Priority: 900},
+			{RepoID: "other", Path: "src/main.go", ObjectOID: "main-oid", Priority: 900},
+			{RepoID: "repo", Path: "src/main.go", ObjectOID: "wrong-oid", Priority: 900},
+		}},
+	})
+	rt := newWarmupRuntime(t, ctx)
+
+	svc.warmupAfterMount(ctx, rt)
+
+	if depth := rt.hydrator.QueueDepth("repo"); depth != 1 {
+		t.Fatalf("QueueDepth = %d, want 1", depth)
+	}
+	select {
+	case event := <-events:
+		if event.Kind != controlplane.EventHydrationQueued {
+			t.Fatalf("event Kind = %q, want %q", event.Kind, controlplane.EventHydrationQueued)
+		}
+		if event.Path != "README.md" || event.ObjectOID != "readme-oid" || event.Generation != 1 {
+			t.Fatalf("unexpected queued event: %#v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for hydration queued event")
+	}
+}
+
+func TestWarmupAfterMountContinuesWhenCoordinatorFails(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, ctx)
+	defer svc.Close()
+	svc.SetCoordinator(&fakeCoordinator{warmupErr: errors.New("actor unavailable")})
+	rt := newWarmupRuntime(t, ctx)
+
+	svc.warmupAfterMount(ctx, rt)
+
+	if depth := rt.hydrator.QueueDepth("repo"); depth != 0 {
+		t.Fatalf("QueueDepth = %d, want 0", depth)
+	}
+}
+
+func newWarmupRuntime(t *testing.T, ctx context.Context) *repoRuntime {
+	t.Helper()
+	snap, err := snapshot.New(ctx, filepath.Join(t.TempDir(), "snap.sqlite"))
+	if err != nil {
+		t.Fatalf("snapshot.New returned error: %v", err)
+	}
+	t.Cleanup(func() { snap.Close() })
+	gen, err := snap.PublishGeneration(ctx, "head-oid", "main", []model.BaseNode{
+		{RepoID: "repo", Path: ".", Type: "dir", Mode: 0o755, SizeState: "known"},
+		{RepoID: "repo", Path: "README.md", Type: "file", Mode: 0o644, ObjectOID: "readme-oid", SizeState: "known", SizeBytes: 10},
+		{RepoID: "repo", Path: "src", Type: "dir", Mode: 0o755, SizeState: "known"},
+		{RepoID: "repo", Path: "src/main.go", Type: "file", Mode: 0o644, ObjectOID: "main-oid", SizeState: "known", SizeBytes: 20},
+	})
+	if err != nil {
+		t.Fatalf("PublishGeneration returned error: %v", err)
+	}
+	resolver := &fusefs.Resolver{Snapshot: snap}
+	resolver.SetGeneration(gen)
+	return &repoRuntime{
+		cfg:      model.RepoConfig{ID: "repo", Name: "repo"},
+		snapshot: snap,
+		hydrator: hydrator.New(nil),
+		resolver: resolver,
+		state:    newRuntimeState("repo", "head-oid", "main", gen),
 	}
 }
 
