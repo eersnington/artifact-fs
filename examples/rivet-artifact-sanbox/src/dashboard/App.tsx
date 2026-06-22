@@ -1,7 +1,6 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Button, LinkButton } from "@cloudflare/kumo/components/button";
 import { Empty } from "@cloudflare/kumo/components/empty";
-import { Flow } from "@cloudflare/kumo/components/flow";
 import { Input } from "@cloudflare/kumo/components/input";
 import { LayerCard } from "@cloudflare/kumo/components/layer-card";
 import { Table } from "@cloudflare/kumo/components/table";
@@ -110,18 +109,31 @@ function SystemMap({ snapshot }: { snapshot: RunStateSnapshot }) {
   return (
     <div className="system-map">
       <SystemStatus snapshot={snapshot} />
-      <Flow canvas={false} align="center" className="system-flow">
-        <Flow.Node render={<SourceRepoNode state={state} />} />
-        <Flow.Node render={<RivetControlNode state={state} />} />
-        <Flow.Node render={<ArtifactFsDaemonNode state={state} />} />
-        <Flow.Parallel align="start">
-          {branches.map((branch) => (
-            <Flow.Node key={branch.agentId} disabled={branch.phase === "starting" && !state} render={<WorkspaceLane branch={branch} />} />
-          ))}
-        </Flow.Parallel>
-      </Flow>
+      <div className="system-map-flow" aria-label="GitHub repo to mounted workspace flow">
+        <div className="pipeline-row">
+          <SourceRepoNode state={state} />
+          <MapArrow label="desired repos" />
+          <RivetControlNode state={state} />
+          <MapArrow label="reconcile" />
+          <ArtifactFsDaemonNode state={state} />
+        </div>
+        <div className="workspace-fanout-visual">
+          <div className="fanout-stem" aria-hidden="true" />
+          <div className="workspace-lanes">
+            {branches.map((branch) => <WorkspaceLane key={branch.agentId} branch={branch} />)}
+          </div>
+        </div>
+      </div>
       <StageTicks branches={branches} state={state} />
       {hasError ? <TechnicalStatusError message={snapshot.error} hasStaleData={Boolean(state)} /> : null}
+    </div>
+  );
+}
+
+function MapArrow({ label }: { label: string }) {
+  return (
+    <div className="map-arrow" aria-label={label}>
+      <span>{label}</span>
     </div>
   );
 }
