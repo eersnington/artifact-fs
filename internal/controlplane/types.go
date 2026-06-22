@@ -38,21 +38,26 @@ const (
 	EventOverlayClean      RuntimeEventKind = "overlay.clean"
 	EventHydrationQueued   RuntimeEventKind = "hydration.queued"
 	EventHydrationComplete RuntimeEventKind = "hydration.complete"
+	EventStatusObserved    RuntimeEventKind = "status.observed"
 )
 
 type RuntimeEvent struct {
-	ID         string
-	RepoID     model.RepoID
-	RepoName   string
-	Kind       RuntimeEventKind
-	At         time.Time
-	HeadOID    string
-	HeadRef    string
-	Generation int64
-	Path       string
-	ObjectOID  string
-	SizeBytes  int64
-	Error      string
+	ID                string
+	RepoID            model.RepoID
+	RepoName          string
+	Kind              RuntimeEventKind
+	At                time.Time
+	HeadOID           string
+	HeadRef           string
+	Generation        int64
+	Path              string
+	ObjectOID         string
+	SizeBytes         int64
+	Error             string
+	State             string
+	DirtyOverlay      bool
+	HydratedBlobCount int64
+	HydratedBlobBytes int64
 }
 
 type WarmupRequest struct {

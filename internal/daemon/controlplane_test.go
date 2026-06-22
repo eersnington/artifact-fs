@@ -14,6 +14,7 @@ import (
 	"github.com/cloudflare/artifact-fs/internal/fusefs"
 	"github.com/cloudflare/artifact-fs/internal/hydrator"
 	"github.com/cloudflare/artifact-fs/internal/model"
+	"github.com/cloudflare/artifact-fs/internal/overlay"
 	"github.com/cloudflare/artifact-fs/internal/snapshot"
 )
 
@@ -270,6 +271,105 @@ func TestRepoWithCredentialLeaseFailsWithoutSafeURL(t *testing.T) {
 	if !strings.Contains(err.Error(), "safe remote URL") {
 		t.Fatalf("error %q did not explain missing safe URL", err.Error())
 	}
+}
+
+func TestRuntimeEventIDUsesStableKeys(t *testing.T) {
+	queued := runtimeEventID(controlplane.RuntimeEvent{RepoID: "repo", Kind: controlplane.EventHydrationQueued, Generation: 3, ObjectOID: "abc"})
+	if queued != "hydration.queued/repo/3/abc" {
+		t.Fatalf("queued event ID = %q", queued)
+	}
+	status := runtimeEventID(controlplane.RuntimeEvent{RepoID: "repo", Kind: controlplane.EventStatusObserved, At: time.Now()})
+	if status != "status.observed/repo" {
+		t.Fatalf("status event ID = %q", status)
+	}
+}
+
+func TestStatusRecordsObservedAndDirtyTransitions(t *testing.T) {
+	ctx := context.Background()
+	svc := newTestService(t, ctx)
+	defer svc.Close()
+	events := make(chan controlplane.RuntimeEvent, 8)
+	svc.SetCoordinator(&fakeCoordinator{events: events})
+	rt := newStatusRuntime(t, ctx, svc)
+
+	if _, err := rt.overlay.CreateFile(ctx, "dirty.txt", 0o644); err != nil {
+		t.Fatalf("CreateFile returned error: %v", err)
+	}
+	if _, err := svc.Status(ctx, rt.cfg.Name); err != nil {
+		t.Fatalf("Status returned error: %v", err)
+	}
+	got := collectEvents(t, events, 2)
+	if got[controlplane.EventOverlayDirty].ID != "overlay.dirty/repo" {
+		t.Fatalf("dirty event = %#v", got[controlplane.EventOverlayDirty])
+	}
+	if got[controlplane.EventStatusObserved].ID != "status.observed/repo" {
+		t.Fatalf("status event = %#v", got[controlplane.EventStatusObserved])
+	}
+
+	if err := rt.overlay.Remove(ctx, "dirty.txt"); err != nil {
+		t.Fatalf("Remove returned error: %v", err)
+	}
+	if _, err := svc.Status(ctx, rt.cfg.Name); err != nil {
+		t.Fatalf("Status returned error: %v", err)
+	}
+	got = collectEvents(t, events, 2)
+	if got[controlplane.EventOverlayClean].ID != "overlay.clean/repo" {
+		t.Fatalf("clean event = %#v", got[controlplane.EventOverlayClean])
+	}
+	if got[controlplane.EventStatusObserved].ID != "status.observed/repo" {
+		t.Fatalf("status event = %#v", got[controlplane.EventStatusObserved])
+	}
+}
+
+func newStatusRuntime(t *testing.T, ctx context.Context, svc *Service) *repoRuntime {
+	t.Helper()
+	cfg := model.RepoConfig{
+		ID:                "repo",
+		Name:              "repo",
+		MountRoot:         filepath.Join(t.TempDir(), "mnt"),
+		RemoteURL:         "https://example.invalid/repo.git",
+		RemoteURLRedacted: "https://example.invalid/repo.git",
+		Branch:            "main",
+		RefreshInterval:   time.Minute,
+		Enabled:           true,
+	}
+	svc.fillPaths(&cfg)
+	if err := svc.registry.AddRepo(ctx, cfg); err != nil {
+		t.Fatalf("AddRepo returned error: %v", err)
+	}
+	ov, err := overlay.New(ctx, cfg)
+	if err != nil {
+		t.Fatalf("overlay.New returned error: %v", err)
+	}
+	snap, err := snapshot.New(ctx, cfg.MetaDBPath)
+	if err != nil {
+		t.Fatalf("snapshot.New returned error: %v", err)
+	}
+	rt := &repoRuntime{
+		cfg:      cfg,
+		snapshot: snap,
+		overlay:  ov,
+		state:    newRuntimeState("repo", "head-oid", "main", 1),
+	}
+	svc.mu.Lock()
+	svc.running[cfg.ID] = rt
+	svc.mu.Unlock()
+	return rt
+}
+
+func collectEvents(t *testing.T, events <-chan controlplane.RuntimeEvent, count int) map[controlplane.RuntimeEventKind]controlplane.RuntimeEvent {
+	t.Helper()
+	out := map[controlplane.RuntimeEventKind]controlplane.RuntimeEvent{}
+	deadline := time.After(time.Second)
+	for len(out) < count {
+		select {
+		case event := <-events:
+			out[event.Kind] = event
+		case <-deadline:
+			t.Fatalf("timed out waiting for events, got %v", out)
+		}
+	}
+	return out
 }
 
 func newWarmupRuntime(t *testing.T, ctx context.Context) *repoRuntime {

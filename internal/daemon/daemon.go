@@ -136,7 +136,7 @@ func (s *Service) recordEvent(event controlplane.RuntimeEvent) {
 		event.At = time.Now()
 	}
 	if event.ID == "" {
-		event.ID = fmt.Sprintf("%s/%s/%d", event.RepoID, event.Kind, event.At.UnixNano())
+		event.ID = runtimeEventID(event)
 	}
 	go func() {
 		eventCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
@@ -145,6 +145,45 @@ func (s *Service) recordEvent(event controlplane.RuntimeEvent) {
 			s.logger.Warn("controlplane event record failed", "repo", event.RepoName, "kind", event.Kind, "error", auth.RedactString(err.Error()))
 		}
 	}()
+}
+
+func runtimeEventID(event controlplane.RuntimeEvent) string {
+	switch event.Kind {
+	case controlplane.EventRepoDesired:
+		return eventID(event.Kind, event.RepoID)
+	case controlplane.EventMountReady:
+		return eventID(event.Kind, event.RepoID, event.Generation)
+	case controlplane.EventSnapshotPublished:
+		return eventID(event.Kind, event.RepoID, event.Generation)
+	case controlplane.EventHeadChanged:
+		if event.Generation > 0 {
+			return eventID(event.Kind, event.RepoID, event.HeadOID, event.Generation)
+		}
+		return eventID(event.Kind, event.RepoID, event.HeadOID, event.HeadRef)
+	case controlplane.EventHydrationQueued, controlplane.EventHydrationComplete:
+		return eventID(event.Kind, event.RepoID, event.Generation, event.ObjectOID)
+	case controlplane.EventOverlayDirty, controlplane.EventOverlayClean:
+		return eventID(event.Kind, event.RepoID)
+	case controlplane.EventStatusObserved:
+		return eventID(event.Kind, event.RepoID)
+	default:
+		return eventID(event.Kind, event.RepoID, event.At.UnixNano())
+	}
+}
+
+func eventID(parts ...any) string {
+	segments := make([]string, 0, len(parts))
+	for _, part := range parts {
+		if part == nil {
+			continue
+		}
+		value := fmt.Sprint(part)
+		if value == "" || value == "0" {
+			continue
+		}
+		segments = append(segments, value)
+	}
+	return strings.Join(segments, "/")
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -342,15 +381,57 @@ func (s *Service) Status(ctx context.Context, name string) (model.RepoRuntimeSta
 	rt, ok := s.running[cfg.ID]
 	if ok {
 		dirty, _ := rt.overlay.DirtyCount(ctx)
-		rt.state.DirtyOverlay = dirty > 0
+		prevDirty := rt.state.DirtyOverlay
+		nextDirty := dirty > 0
+		rt.state.DirtyOverlay = nextDirty
 		st := rt.state // copy under lock
 		cfg = rt.cfg
 		s.mu.Unlock()
 		applyHydrationStats(&st, cfg.BlobCacheDir)
+		s.recordDirtyTransition(cfg, st, prevDirty, nextDirty)
+		s.recordStatusObserved(st)
 		return st, nil
 	}
 	s.mu.Unlock()
-	return s.readPersistedStatus(ctx, cfg), nil
+	st := s.readPersistedStatus(ctx, cfg)
+	s.recordStatusObserved(st)
+	return st, nil
+}
+
+func (s *Service) recordDirtyTransition(cfg model.RepoConfig, st model.RepoRuntimeState, prevDirty bool, nextDirty bool) {
+	if prevDirty == nextDirty {
+		return
+	}
+	kind := controlplane.EventOverlayClean
+	if nextDirty {
+		kind = controlplane.EventOverlayDirty
+	}
+	s.recordEvent(controlplane.RuntimeEvent{
+		RepoID:            cfg.ID,
+		RepoName:          cfg.Name,
+		Kind:              kind,
+		HeadOID:           st.CurrentHEADOID,
+		HeadRef:           st.CurrentHEADRef,
+		Generation:        st.SnapshotGeneration,
+		State:             st.State,
+		DirtyOverlay:      nextDirty,
+		HydratedBlobCount: st.HydratedBlobCount,
+		HydratedBlobBytes: st.HydratedBlobBytes,
+	})
+}
+
+func (s *Service) recordStatusObserved(st model.RepoRuntimeState) {
+	s.recordEvent(controlplane.RuntimeEvent{
+		RepoID:            st.RepoID,
+		Kind:              controlplane.EventStatusObserved,
+		HeadOID:           st.CurrentHEADOID,
+		HeadRef:           st.CurrentHEADRef,
+		Generation:        st.SnapshotGeneration,
+		State:             st.State,
+		DirtyOverlay:      st.DirtyOverlay,
+		HydratedBlobCount: st.HydratedBlobCount,
+		HydratedBlobBytes: st.HydratedBlobBytes,
+	})
 }
 
 func (s *Service) FetchNow(ctx context.Context, name string) error {

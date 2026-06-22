@@ -196,34 +196,42 @@ func (r repoConfigWire) toModel() model.RepoConfig {
 }
 
 type runtimeEventWire struct {
-	ID         string    `json:"id,omitempty"`
-	RepoID     string    `json:"repoId"`
-	RepoName   string    `json:"repoName"`
-	Kind       string    `json:"kind"`
-	At         time.Time `json:"at"`
-	HeadOID    string    `json:"headOid,omitempty"`
-	HeadRef    string    `json:"headRef,omitempty"`
-	Generation int64     `json:"generation,omitempty"`
-	Path       string    `json:"path,omitempty"`
-	ObjectOID  string    `json:"objectOid,omitempty"`
-	SizeBytes  int64     `json:"sizeBytes,omitempty"`
-	Error      string    `json:"error,omitempty"`
+	ID                string    `json:"id,omitempty"`
+	RepoID            string    `json:"repoId"`
+	RepoName          string    `json:"repoName"`
+	Kind              string    `json:"kind"`
+	At                time.Time `json:"at"`
+	HeadOID           string    `json:"headOid,omitempty"`
+	HeadRef           string    `json:"headRef,omitempty"`
+	Generation        int64     `json:"generation,omitempty"`
+	Path              string    `json:"path,omitempty"`
+	ObjectOID         string    `json:"objectOid,omitempty"`
+	SizeBytes         int64     `json:"sizeBytes,omitempty"`
+	Error             string    `json:"error,omitempty"`
+	State             string    `json:"state,omitempty"`
+	DirtyOverlay      bool      `json:"dirtyOverlay,omitempty"`
+	HydratedBlobCount int64     `json:"hydratedBlobCount,omitempty"`
+	HydratedBlobBytes int64     `json:"hydratedBlobBytes,omitempty"`
 }
 
 func runtimeEventWireFromEvent(event RuntimeEvent) runtimeEventWire {
 	return runtimeEventWire{
-		ID:         event.ID,
-		RepoID:     string(event.RepoID),
-		RepoName:   event.RepoName,
-		Kind:       string(event.Kind),
-		At:         event.At,
-		HeadOID:    event.HeadOID,
-		HeadRef:    event.HeadRef,
-		Generation: event.Generation,
-		Path:       event.Path,
-		ObjectOID:  event.ObjectOID,
-		SizeBytes:  event.SizeBytes,
-		Error:      event.Error,
+		ID:                event.ID,
+		RepoID:            string(event.RepoID),
+		RepoName:          event.RepoName,
+		Kind:              string(event.Kind),
+		At:                event.At,
+		HeadOID:           event.HeadOID,
+		HeadRef:           event.HeadRef,
+		Generation:        event.Generation,
+		Path:              event.Path,
+		ObjectOID:         event.ObjectOID,
+		SizeBytes:         event.SizeBytes,
+		Error:             event.Error,
+		State:             event.State,
+		DirtyOverlay:      event.DirtyOverlay,
+		HydratedBlobCount: event.HydratedBlobCount,
+		HydratedBlobBytes: event.HydratedBlobBytes,
 	}
 }
 
