@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/cloudflare/artifact-fs/internal/controlplane"
 	"github.com/cloudflare/artifact-fs/internal/daemon"
 	"github.com/cloudflare/artifact-fs/internal/logging"
 	"github.com/cloudflare/artifact-fs/internal/model"
@@ -37,6 +38,8 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 			Flags: []ucli.Flag{
 				ucli.StringFlag{Name: "root", Value: filepath.Join(root, "mnt"), Usage: "mount root directory"},
 				ucli.IntFlag{Name: "hydration-concurrency", Value: daemon.DefaultHydrationConcurrency, Usage: "number of concurrent blob hydration workers"},
+				ucli.StringFlag{Name: "controlplane", Value: envOrDefault("ARTIFACT_FS_CONTROLPLANE", "noop"), Usage: "controlplane adapter: noop or rivet"},
+				ucli.StringFlag{Name: "rivet-url", Value: os.Getenv("ARTIFACT_FS_RIVET_URL"), Usage: "Rivet controlplane URL when --controlplane=rivet"},
 			},
 			Action: func(c *ucli.Context) error {
 				logger := logging.NewJSONLogger(stderr, slog.LevelInfo)
@@ -47,6 +50,11 @@ func Run(ctx context.Context, args []string, stdout io.Writer, stderr io.Writer)
 				defer svc.Close()
 				svc.SetMountRoot(c.String("root"))
 				svc.SetHydrationConcurrency(c.Int("hydration-concurrency"))
+				coord, err := newDaemonCoordinator(c.String("controlplane"), c.String("rivet-url"), os.Getenv("ARTIFACT_FS_RIVET_TOKEN"))
+				if err != nil {
+					return err
+				}
+				svc.SetCoordinator(coord)
 				err = svc.Start(ctx)
 				if err == context.Canceled {
 					return nil
@@ -184,6 +192,27 @@ func defaultRoot() string {
 		}
 	}
 	return "/var/lib/artifact-fs"
+}
+
+func envOrDefault(name string, fallback string) string {
+	if v := strings.TrimSpace(os.Getenv(name)); v != "" {
+		return v
+	}
+	return fallback
+}
+
+func newDaemonCoordinator(mode string, rivetURL string, rivetToken string) (controlplane.Coordinator, error) {
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "", "noop", "none", "local":
+		return controlplane.NewNoop(), nil
+	case "rivet":
+		return controlplane.NewRivet(controlplane.RivetOptions{
+			BaseURL: rivetURL,
+			Token:   rivetToken,
+		})
+	default:
+		return nil, fmt.Errorf("unsupported controlplane %q: expected noop or rivet", mode)
+	}
 }
 
 // withService creates a daemon.Service for the duration of the action.
