@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/cloudflare/artifact-fs/internal/auth"
+	"github.com/cloudflare/artifact-fs/internal/controlplane"
 	"github.com/cloudflare/artifact-fs/internal/fusefs"
 	"github.com/cloudflare/artifact-fs/internal/gitstore"
 	"github.com/cloudflare/artifact-fs/internal/hydrator"
@@ -33,6 +34,7 @@ type Service struct {
 	logger               *slog.Logger
 	registry             *registry.Store
 	git                  *gitstore.Store
+	coordinator          controlplane.Coordinator
 	mu                   sync.Mutex
 	running              map[model.RepoID]*repoRuntime
 	mountFailures        map[model.RepoID]*mountFailure
@@ -62,6 +64,9 @@ type aheadBehind struct {
 }
 
 func New(ctx context.Context, root string, logger *slog.Logger) (*Service, error) {
+	if logger == nil {
+		logger = slog.Default()
+	}
 	reg, err := registry.New(ctx, filepath.Join(root, "config", "repos.sqlite"))
 	if err != nil {
 		return nil, err
@@ -71,6 +76,7 @@ func New(ctx context.Context, root string, logger *slog.Logger) (*Service, error
 		logger:        logger,
 		registry:      reg,
 		git:           gitstore.New(logger),
+		coordinator:   controlplane.NewNoop(),
 		running:       map[model.RepoID]*repoRuntime{},
 		mountFailures: map[model.RepoID]*mountFailure{},
 	}
@@ -91,6 +97,12 @@ func (s *Service) SetHydrationConcurrency(n int) {
 	}
 }
 
+func (s *Service) SetCoordinator(c controlplane.Coordinator) {
+	if c != nil {
+		s.coordinator = c
+	}
+}
+
 func (s *Service) hydrationWorkers() int {
 	if s.hydrationConcurrency > 0 {
 		return s.hydrationConcurrency
@@ -106,7 +118,29 @@ func (s *Service) Close() error {
 		delete(s.running, id)
 	}
 	s.git.Close()
+	if s.coordinator != nil {
+		_ = s.coordinator.Close()
+	}
 	return s.registry.Close()
+}
+
+func (s *Service) recordEvent(event controlplane.RuntimeEvent) {
+	if s.coordinator == nil {
+		return
+	}
+	if event.At.IsZero() {
+		event.At = time.Now()
+	}
+	if event.ID == "" {
+		event.ID = fmt.Sprintf("%s/%s/%d", event.RepoID, event.Kind, event.At.UnixNano())
+	}
+	go func() {
+		eventCtx, cancel := context.WithTimeout(context.Background(), 500*time.Millisecond)
+		defer cancel()
+		if err := s.coordinator.RecordEvent(eventCtx, event); err != nil {
+			s.logger.Warn("controlplane event record failed", "repo", event.RepoName, "kind", event.Kind, "error", auth.RedactString(err.Error()))
+		}
+	}()
 }
 
 func (s *Service) Start(ctx context.Context) error {
@@ -133,6 +167,8 @@ func (s *Service) Start(ctx context.Context) error {
 // syncRepos reconciles the running set with the registry. Mounts new repos
 // and unmounts repos that were removed or disabled.
 func (s *Service) syncRepos(ctx context.Context) error {
+	s.syncDesiredRepos(ctx)
+
 	repos, err := s.registry.ListRepos(ctx)
 	if err != nil {
 		return err
@@ -157,6 +193,12 @@ func (s *Service) syncRepos(ctx context.Context) error {
 		s.logger.Info("mounting repo", "repo", repo.Name)
 		if err := s.mountRepo(ctx, repo); err != nil {
 			s.logger.Error("repo mount failed", "repo", repo.Name, "error", err)
+			s.recordEvent(controlplane.RuntimeEvent{
+				RepoID:   repo.ID,
+				RepoName: repo.Name,
+				Kind:     controlplane.EventMountFailed,
+				Error:    auth.RedactString(err.Error()),
+			})
 			mf := s.mountFailures[repo.ID]
 			if mf == nil {
 				mf = &mountFailure{}
@@ -193,6 +235,45 @@ func (s *Service) syncRepos(ctx context.Context) error {
 		}
 	}
 
+	return nil
+}
+
+func (s *Service) syncDesiredRepos(ctx context.Context) {
+	if s.coordinator == nil {
+		return
+	}
+	repos, err := s.coordinator.DesiredRepos(ctx, controlplane.HostInfo{Root: s.root, MountRoot: s.effectiveMountRoot()})
+	if err != nil {
+		s.logger.Warn("controlplane desired repos unavailable", "error", auth.RedactString(err.Error()))
+		return
+	}
+	for _, repo := range repos {
+		if err := s.addDesiredRepo(ctx, repo); err != nil {
+			s.logger.Warn("controlplane desired repo rejected", "repo", repo.Name, "error", auth.RedactString(err.Error()))
+		}
+	}
+}
+
+func (s *Service) addDesiredRepo(ctx context.Context, cfg model.RepoConfig) error {
+	if err := model.ValidateRepoName(cfg.Name); err != nil {
+		return err
+	}
+	if cfg.ID == "" {
+		cfg.ID = model.RepoID(cfg.Name)
+	}
+	if cfg.RefreshInterval <= 0 {
+		cfg.RefreshInterval = 30 * time.Second
+	}
+	cfg.RemoteURLRedacted = auth.RedactRemoteURL(cfg.RemoteURL)
+	s.fillPaths(&cfg)
+	if err := s.registry.AddRepo(ctx, cfg); err != nil {
+		return err
+	}
+	s.recordEvent(controlplane.RuntimeEvent{
+		RepoID:   cfg.ID,
+		RepoName: cfg.Name,
+		Kind:     controlplane.EventRepoDesired,
+	})
 	return nil
 }
 
@@ -274,6 +355,12 @@ func (s *Service) FetchNow(ctx context.Context, name string) error {
 		return err
 	}
 	if err := s.git.Fetch(ctx, cfg); err != nil {
+		s.recordEvent(controlplane.RuntimeEvent{
+			RepoID:   cfg.ID,
+			RepoName: cfg.Name,
+			Kind:     controlplane.EventFetchFailed,
+			Error:    auth.RedactString(err.Error()),
+		})
 		return err
 	}
 	state, err := s.fetchState(ctx, cfg)
@@ -285,6 +372,11 @@ func (s *Service) FetchNow(ctx context.Context, name string) error {
 		markFetchSuccess(&rt.state, time.Now(), state)
 	}
 	s.mu.Unlock()
+	s.recordEvent(controlplane.RuntimeEvent{
+		RepoID:   cfg.ID,
+		RepoName: cfg.Name,
+		Kind:     controlplane.EventFetchSucceeded,
+	})
 	return nil
 }
 
@@ -350,6 +442,11 @@ func (s *Service) ensurePreparedRepo(ctx context.Context, cfg model.RepoConfig) 
 // mountRepo opens all stores, starts the FUSE server, watcher, and refresh
 // loop. Called by the daemon's Start for each registered repo.
 func (s *Service) mountRepo(ctx context.Context, cfg model.RepoConfig) error {
+	s.recordEvent(controlplane.RuntimeEvent{
+		RepoID:   cfg.ID,
+		RepoName: cfg.Name,
+		Kind:     controlplane.EventMountAttempted,
+	})
 	snap, headOID, headRef, gen, err := s.ensurePreparedRepo(ctx, cfg)
 	if err != nil {
 		return err
@@ -380,6 +477,16 @@ func (s *Service) mountRepo(ctx context.Context, cfg model.RepoConfig) error {
 
 	h.SetOnHydrated(func(_ model.RepoID, objectOID string, size int64) {
 		snap.UpdateSize(resolver.Generation(), objectOID, size)
+		s.recordEvent(controlplane.RuntimeEvent{
+			RepoID:     cfg.ID,
+			RepoName:   cfg.Name,
+			Kind:       controlplane.EventHydrationComplete,
+			HeadOID:    headOID,
+			HeadRef:    headRef,
+			Generation: resolver.Generation(),
+			ObjectOID:  objectOID,
+			SizeBytes:  size,
+		})
 	})
 	h.Start(s.hydrationWorkers(), cfg)
 	engine := &fusefs.Engine{
@@ -408,6 +515,14 @@ func (s *Service) mountRepo(ctx context.Context, cfg model.RepoConfig) error {
 		state:    newRuntimeState(cfg.ID, headOID, headRef, gen),
 	}
 	s.startRuntime(rt)
+	s.recordEvent(controlplane.RuntimeEvent{
+		RepoID:     cfg.ID,
+		RepoName:   cfg.Name,
+		Kind:       controlplane.EventMountReady,
+		HeadOID:    headOID,
+		HeadRef:    headRef,
+		Generation: gen,
+	})
 
 	return nil
 }
@@ -432,6 +547,13 @@ func (s *Service) onHEADChanged(ctx context.Context, rt *repoRuntime) {
 		s.mu.Lock()
 		rt.state.CurrentHEADRef = ref
 		s.mu.Unlock()
+		s.recordEvent(controlplane.RuntimeEvent{
+			RepoID:   rt.cfg.ID,
+			RepoName: rt.cfg.Name,
+			Kind:     controlplane.EventHeadChanged,
+			HeadOID:  oid,
+			HeadRef:  ref,
+		})
 		return
 	}
 	gen, phase, err := s.publishSnapshot(ctx, rt.cfg, rt.snapshot, oid, ref)
@@ -463,6 +585,14 @@ func (s *Service) onHEADChanged(ctx context.Context, rt *repoRuntime) {
 	s.mu.Lock()
 	setHeadState(&rt.state, oid, ref, gen)
 	s.mu.Unlock()
+	s.recordEvent(controlplane.RuntimeEvent{
+		RepoID:     rt.cfg.ID,
+		RepoName:   rt.cfg.Name,
+		Kind:       controlplane.EventHeadChanged,
+		HeadOID:    oid,
+		HeadRef:    ref,
+		Generation: gen,
+	})
 }
 
 func (s *Service) refreshLoop(rt *repoRuntime) {
@@ -478,9 +608,16 @@ func (s *Service) refreshLoop(rt *repoRuntime) {
 			ctx, cancel := context.WithTimeout(rt.ctx, 30*time.Second)
 			err := s.git.Fetch(ctx, rt.cfg)
 			if err != nil {
+				redactedErr := auth.RedactString(err.Error())
 				s.mu.Lock()
-				markFetchFailure(&rt.state, auth.RedactString(err.Error()))
+				markFetchFailure(&rt.state, redactedErr)
 				s.mu.Unlock()
+				s.recordEvent(controlplane.RuntimeEvent{
+					RepoID:   rt.cfg.ID,
+					RepoName: rt.cfg.Name,
+					Kind:     controlplane.EventFetchFailed,
+					Error:    redactedErr,
+				})
 				cancel()
 				// Exponential backoff on failure, capped at maxBackoff
 				backoff = min(backoff*2, maxBackoff)
@@ -498,6 +635,11 @@ func (s *Service) refreshLoop(rt *repoRuntime) {
 				applyAheadBehind(&rt.state, state)
 			}
 			s.mu.Unlock()
+			s.recordEvent(controlplane.RuntimeEvent{
+				RepoID:   rt.cfg.ID,
+				RepoName: rt.cfg.Name,
+				Kind:     controlplane.EventFetchSucceeded,
+			})
 		}
 	}
 }
@@ -544,6 +686,14 @@ func (s *Service) publishSnapshot(ctx context.Context, cfg model.RepoConfig, sna
 	if err != nil {
 		return 0, "publish", err
 	}
+	s.recordEvent(controlplane.RuntimeEvent{
+		RepoID:     cfg.ID,
+		RepoName:   cfg.Name,
+		Kind:       controlplane.EventSnapshotPublished,
+		HeadOID:    oid,
+		HeadRef:    ref,
+		Generation: gen,
+	})
 	return gen, "", nil
 }
 
@@ -707,6 +857,13 @@ func (s *Service) fillPaths(cfg *model.RepoConfig) {
 	if cfg.OverlayDBPath == "" {
 		cfg.OverlayDBPath = filepath.Join(cfg.OverlayDir, "meta.sqlite")
 	}
+}
+
+func (s *Service) effectiveMountRoot() string {
+	if s.mountRoot != "" {
+		return s.mountRoot
+	}
+	return filepath.Join(s.root, "mnt")
 }
 
 func ParseRefresh(v string) (time.Duration, error) {
