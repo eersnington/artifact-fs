@@ -1,0 +1,36 @@
+{
+  "$schema": "./node_modules/wrangler/config-schema.json",
+  "name": "rivet-artifact-sanbox",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-03-30",
+  "compatibility_flags": ["nodejs_compat"],
+  "observability": {
+    "enabled": true
+  },
+  "vars": {
+    "SANDBOX_API_TOKEN": "local-dev-token"
+  },
+  "containers": [
+    {
+      "class_name": "RivetArtifactSandbox",
+      "image": "./Dockerfile",
+      "image_build_context": "../../",
+      "instance_type": "basic",
+      "max_instances": 1
+    }
+  ],
+  "durable_objects": {
+    "bindings": [
+      {
+        "class_name": "RivetArtifactSandbox",
+        "name": "RivetArtifactSandbox"
+      }
+    ]
+  },
+  "migrations": [
+    {
+      "new_sqlite_classes": ["RivetArtifactSandbox"],
+      "tag": "v1"
+    }
+  ]
+}
