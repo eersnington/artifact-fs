@@ -39,6 +39,10 @@ export function createRunStateStore({ sandboxId, token }: { sandboxId: string; t
       if (!response.ok) {
         throw new Error(await responseError(response));
       }
+      const contentType = response.headers.get("content-type") || "";
+      if (!contentType.includes("application/json")) {
+        throw new Error("Status endpoint did not return JSON.");
+      }
       const data = await response.json() as RunState;
       setSnapshot({ status: "ready", data, error: null });
     } catch (error) {

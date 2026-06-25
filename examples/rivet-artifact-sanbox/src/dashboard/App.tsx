@@ -1,272 +1,429 @@
 import { Badge } from "@cloudflare/kumo/components/badge";
 import { Button, LinkButton } from "@cloudflare/kumo/components/button";
-import { Empty } from "@cloudflare/kumo/components/empty";
 import { Input } from "@cloudflare/kumo/components/input";
-import { LayerCard } from "@cloudflare/kumo/components/layer-card";
-import { Table } from "@cloudflare/kumo/components/table";
+import { Popover } from "@cloudflare/kumo/components/popover";
 import { Text } from "@cloudflare/kumo/components/text";
-import { ArrowSquareOutIcon, CopyIcon } from "@phosphor-icons/react";
+import { Tooltip, TooltipProvider } from "@cloudflare/kumo/components/tooltip";
+import {
+  ArrowSquareOutIcon,
+  CloudArrowDownIcon,
+  CopyIcon,
+  FolderOpenIcon,
+  GitCommitIcon,
+  GithubLogoIcon,
+  InfoIcon,
+  PathIcon,
+  PlayIcon,
+  RobotIcon,
+  StackIcon,
+  TimerIcon,
+  WarningCircleIcon,
+  type Icon,
+} from "@phosphor-icons/react";
 import { useState, useSyncExternalStore, type FormEvent } from "react";
-import { createRunStateStore, type RunStateSnapshot } from "./run-state-store";
 import {
   commitCount,
   formatDuration,
   formatTime,
-  phaseBadgeVariant,
   shortSha,
   stageIndex,
-  summarizeMilestoneEvents,
   type AgentPhase,
   type AgentState,
   type ArtifactFsEvent,
-  type MilestoneEvent,
+  type DesiredRepo,
   type RunState,
 } from "./model";
+import { createRunStateStore, type RunStateSnapshot } from "./run-state-store";
 
 const params = new URLSearchParams(window.location.search);
 const sandboxId = normalizeId(params.get("sandboxId") || "demo");
 const token = params.get("token") || "";
 const store = createRunStateStore({ sandboxId, token });
 
-type WorkspaceBranch = {
-  agentId: string;
-  repoName: string;
-  mountPath: string;
-  phase: AgentPhase;
-  step: string;
-  commit: string | null;
-  head: string | null;
-  error: string | null;
+type WorkbenchAgent = AgentState & {
   stage: number;
 };
 
+type StepStatus = "pending" | "active" | "done" | "failed";
+type SignalTone = "blue" | "green" | "amber" | "purple" | "neutral" | "red";
+
+type Benefit = {
+  label: string;
+  icon: Icon;
+  detail: string;
+};
+
+type PipelineNode = {
+  key: string;
+  label: string;
+  icon: Icon;
+  value: string;
+  status: StepStatus;
+  detail: string;
+};
+
+const benefits: Benefit[] = [
+  {
+    label: "No full clone",
+    icon: CloudArrowDownIcon,
+    detail: "ArtifactFS exposes the repo as a folder while Git blobs hydrate only when needed.",
+  },
+  {
+    label: "Local writes",
+    icon: StackIcon,
+    detail: "Agent output lands in ArtifactFS' local overlay before it becomes a commit.",
+  },
+  {
+    label: "Normal folders",
+    icon: FolderOpenIcon,
+    detail: "The simulated agents use ordinary mounted paths, not a custom storage API.",
+  },
+  {
+    label: "Local commits",
+    icon: GitCommitIcon,
+    detail: "The demo proves local Git commits inside mounted folders. It does not push or open PRs.",
+  },
+];
+
 export function App() {
   const snapshot = useSyncExternalStore(store.subscribe, store.getSnapshot, store.getSnapshot);
+  const state = snapshot.data;
+  const agents = workspaceAgents(state);
+  const metrics = runMetrics(state, agents);
 
   return (
-    <main className="dashboard-shell">
-      <Header statusUrl={store.getStatusUrl()} state={snapshot.data} />
-      <SystemStage snapshot={snapshot} />
-      {snapshot.data ? <TechnicalTrace state={snapshot.data} /> : null}
-    </main>
+    <TooltipProvider>
+      <main className="demo-shell">
+        <Sidebar snapshot={snapshot} state={state} metrics={metrics} />
+        <section className="demo-main" aria-label="ArtifactFS live observability">
+          <MainHeader statusUrl={store.getStatusUrl()} snapshot={snapshot} state={state} metrics={metrics} />
+          <BenefitStrip />
+          <Pipeline snapshot={snapshot} state={state} metrics={metrics} />
+          <MountActivity state={state} agents={agents} snapshot={snapshot} />
+        </section>
+      </main>
+    </TooltipProvider>
   );
 }
 
-function Header({ statusUrl, state }: { statusUrl: string; state: RunState | null }) {
+function Sidebar({ snapshot, state, metrics }: { snapshot: RunStateSnapshot; state: RunState | null; metrics: RunMetrics }) {
+  return (
+    <aside className="demo-rail" aria-label="Demo controls">
+      <RailHeader snapshot={snapshot} />
+      <RunControl hasRun={Boolean(state)} />
+      <RunSnapshot snapshot={snapshot} state={state} metrics={metrics} />
+    </aside>
+  );
+}
+
+function RailHeader({ snapshot }: { snapshot: RunStateSnapshot }) {
+  return (
+    <div className="rail-header">
+      <div className="rail-mark" aria-hidden="true">AFS</div>
+      <div className="rail-title">
+        <Text as="h1" variant="heading3">ArtifactFS</Text>
+        <Text as="p" variant="secondary" size="sm">Rivet live demo</Text>
+      </div>
+      <Badge variant={snapshotBadgeVariant(snapshot)} appearance="dot">
+        {snapshotLabel(snapshot)}
+      </Badge>
+    </div>
+  );
+}
+
+function MainHeader({
+  statusUrl,
+  snapshot,
+  state,
+  metrics,
+}: {
+  statusUrl: string;
+  snapshot: RunStateSnapshot;
+  state: RunState | null;
+  metrics: RunMetrics;
+}) {
   const [copied, setCopied] = useState(false);
 
   const copyLink = async () => {
-    await navigator.clipboard.writeText(window.location.href);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 1_200);
+    try {
+      await navigator.clipboard.writeText(window.location.href);
+      setCopied(true);
+      window.setTimeout(() => setCopied(false), 1_200);
+    } catch {
+      setCopied(false);
+    }
   };
 
   return (
-    <header className="dashboard-header">
-      <div>
-        <div className="dashboard-kicker">ArtifactFS sandbox</div>
-        <Text as="h1" variant="heading1">Rivet + ArtifactFS</Text>
+    <header className="main-header">
+      <div className="main-heading">
+        <Text as="p" variant="secondary" size="sm">GitHub to Rivet to ArtifactFS to agents to commits</Text>
+        <Text as="h2" variant="heading3">{state?.runId || sandboxId}</Text>
       </div>
-      <div className="dashboard-header-actions">
-        <Badge variant={state ? phaseBadgeVariant(state.state) : "neutral"} appearance="dot">
-          {state?.state || "loading"}
-        </Badge>
-        <Button variant="secondary" icon={CopyIcon} onClick={copyLink}>{copied ? "Copied" : "Copy link"}</Button>
-        <LinkButton variant="outline" icon={ArrowSquareOutIcon} href={statusUrl}>Raw JSON</LinkButton>
+      <div className="header-metrics" aria-label="Run summary">
+        <HeaderMetric icon={GithubLogoIcon} label="Source" value={repoLabel(state?.remote)} />
+        <HeaderMetric icon={FolderOpenIcon} label="Mounts" value={`${metrics.mounted}/${metrics.total}`} />
+        <HeaderMetric icon={GitCommitIcon} label="Commits" value={`${metrics.committed}/${metrics.total}`} />
+        <HeaderMetric icon={TimerIcon} label="Elapsed" value={metrics.elapsed} />
+      </div>
+      <div className="header-actions">
+        {snapshot.status === "error" ? (
+          <span className="quiet-warning">
+            <WarningCircleIcon size={15} aria-hidden="true" />
+            {snapshot.data ? "stale" : "offline"}
+          </span>
+        ) : null}
+        <Button size="sm" variant="secondary" icon={CopyIcon} onClick={copyLink}>
+          {copied ? "Copied" : "Copy"}
+        </Button>
+        <LinkButton size="sm" variant="outline" icon={ArrowSquareOutIcon} href={statusUrl}>
+          JSON
+        </LinkButton>
       </div>
     </header>
   );
 }
 
-function SystemStage({ snapshot }: { snapshot: RunStateSnapshot }) {
+function HeaderMetric({ icon: IconComponent, label, value }: { icon: Icon; label: string; value: string }) {
   return (
-    <section className="system-stage" aria-label="Live workspace system map">
-      <div className="system-stage-copy">
+    <div className="header-metric">
+      <IconComponent size={15} aria-hidden="true" />
+      <span>{label}</span>
+      <strong>{value}</strong>
+    </div>
+  );
+}
+
+function BenefitStrip() {
+  return (
+    <section className="benefit-strip" aria-label="ArtifactFS benefits">
+      {benefits.map((benefit) => (
+        <Tooltip
+          key={benefit.label}
+          content={benefit.detail}
+          side="bottom"
+          render={<button type="button" className="benefit-chip" />}
+        >
+          <benefit.icon size={15} aria-hidden="true" />
+          <span>{benefit.label}</span>
+        </Tooltip>
+      ))}
+    </section>
+  );
+}
+
+function Pipeline({ snapshot, state, metrics }: { snapshot: RunStateSnapshot; state: RunState | null; metrics: RunMetrics }) {
+  const nodes = pipelineNodes(snapshot, state, metrics);
+
+  return (
+    <section className="pipeline" aria-label="Live pipeline">
+      {nodes.map((node, index) => (
+        <Tooltip
+          key={node.key}
+          content={node.detail}
+          side="bottom"
+          render={<button type="button" className="pipeline-node" data-status={node.status} />}
+        >
+          <node.icon size={16} aria-hidden="true" />
+          <span>{node.label}</span>
+          <strong>{node.value}</strong>
+          {index < nodes.length - 1 ? <i aria-hidden="true" /> : null}
+        </Tooltip>
+      ))}
+    </section>
+  );
+}
+
+function MountActivity({
+  state,
+  agents,
+  snapshot,
+}: {
+  state: RunState | null;
+  agents: WorkbenchAgent[];
+  snapshot: RunStateSnapshot;
+}) {
+  const events = state?.artifactFsEvents || [];
+
+  return (
+    <section className="activity-section" aria-label="Live mount activity">
+      <div className="activity-title">
         <div>
-          <Text as="h2" variant="heading1">Git workspaces for parallel agents</Text>
-          <Text as="p" variant="secondary">Rivet coordinates desired workspaces. ArtifactFS mounts them as writable folders.</Text>
+          <Text as="h2" variant="heading3">Mount Activity</Text>
+          <Text as="p" variant="secondary" size="sm">{activitySubtitle(snapshot, state)}</Text>
         </div>
-        <div className="stage-legend" aria-label="Demo caveats">
-          <span>simulated agents</span>
-          <span>local commits only</span>
-          <span>no GitHub push</span>
-        </div>
+        <Badge variant={snapshotBadgeVariant(snapshot)} appearance="dot">
+          {snapshotLabel(snapshot)}
+        </Badge>
       </div>
 
-      <div className="system-frame">
-        <SystemMap snapshot={snapshot} />
-        <RunControlRail hasRun={Boolean(snapshot.data)} />
+      <div className="activity-scroll">
+        <div className="mount-grid" role="table" aria-label="Mounted folders by agent">
+          <div className="mount-head" role="row">
+            <div role="columnheader">Source</div>
+            <div role="columnheader">Rivet</div>
+            <div role="columnheader">ArtifactFS</div>
+            <div role="columnheader">Agents</div>
+            <div role="columnheader">Commits</div>
+            <div role="columnheader" aria-label="Details" />
+          </div>
+          {agents.map((agent) => (
+            <AgentActivityRow
+              key={agent.agentId}
+              agent={agent}
+              state={state}
+              events={eventsForAgent(events, agent)}
+            />
+          ))}
+        </div>
       </div>
     </section>
   );
 }
 
-function SystemMap({ snapshot }: { snapshot: RunStateSnapshot }) {
-  const state = snapshot.data;
-  const branches = workspaceBranches(state);
-  const hasError = snapshot.status === "error";
+function AgentActivityRow({
+  agent,
+  state,
+  events,
+}: {
+  agent: WorkbenchAgent;
+  state: RunState | null;
+  events: ArtifactFsEvent[];
+}) {
+  const desired = isDesired(agent, state?.desiredRepos || []);
+  const artifactLabel = artifactFsLabel(agent);
+  const agentLabel = agentWorkLabel(agent);
+  const commitLabel = agent.commit ? agent.commit.slice(0, 8) : "pending";
+  const rivetLabel = desired ? "desired" : "pending";
 
   return (
-    <div className="system-map">
-      <SystemStatus snapshot={snapshot} />
-      <div className="system-map-flow" aria-label="GitHub repo to mounted workspace flow">
-        <div className="pipeline-row">
-          <SourceRepoNode state={state} />
-          <MapArrow label="desired repos" />
-          <RivetControlNode state={state} />
-          <MapArrow label="reconcile" />
-          <ArtifactFsDaemonNode state={state} />
-        </div>
-        <div className="workspace-fanout-visual">
-          <div className="fanout-stem" aria-hidden="true" />
-          <div className="workspace-lanes">
-            {branches.map((branch) => <WorkspaceLane key={branch.agentId} branch={branch} />)}
-          </div>
-        </div>
+    <div className="mount-row" role="row">
+      <div className="lane-cell source-cell" role="cell">
+        <StepPill
+          icon={GithubLogoIcon}
+          label={repoShortLabel(state?.remote)}
+          status={state ? "done" : "pending"}
+          detail={`Source repo on ${state?.branch || "main"}. ArtifactFS reads Git data lazily; this view does not claim a push back to GitHub.`}
+        />
+        <span className="subtle-line">{agent.repoName}</span>
       </div>
-      <StageTicks branches={branches} state={state} />
-      {hasError ? <TechnicalStatusError message={snapshot.error} hasStaleData={Boolean(state)} /> : null}
+      <div className="lane-cell" role="cell">
+        <StepPill
+          icon={CloudArrowDownIcon}
+          label={rivetLabel}
+          status={desired ? "done" : state ? "active" : "pending"}
+          detail="Rivet publishes desired workspace state. ArtifactFS decides how to materialize it locally."
+        />
+      </div>
+      <div className="lane-cell artifact-cell" role="cell">
+        <StepPill
+          icon={PathIcon}
+          label={artifactLabel}
+          status={artifactFsStatus(agent)}
+          detail="ArtifactFS owns the mounted folder, snapshot, overlay, gitdir, blob cache, hydration, and FUSE behavior."
+        />
+        <EventMarkers events={events} />
+      </div>
+      <div className="lane-cell" role="cell">
+        <StepPill
+          icon={RobotIcon}
+          label={agentLabel}
+          status={agentWorkStatus(agent)}
+          detail={`Simulated agent step: ${agent.step}. The demo writes files through the mounted folder.`}
+        />
+      </div>
+      <div className="lane-cell" role="cell">
+        <StepPill
+          icon={GitCommitIcon}
+          label={commitLabel}
+          status={commitStatus(agent)}
+          detail="Git commit created inside the mounted folder. This is local Git state, not a GitHub push."
+        />
+      </div>
+      <div className="details-cell" role="cell">
+        <AgentDetails agent={agent} events={events} />
+      </div>
     </div>
   );
 }
 
-function MapArrow({ label }: { label: string }) {
+function StepPill({
+  icon: IconComponent,
+  label,
+  status,
+  detail,
+}: {
+  icon: Icon;
+  label: string;
+  status: StepStatus;
+  detail: string;
+}) {
   return (
-    <div className="map-arrow" aria-label={label}>
+    <Tooltip content={detail} side="top" render={<button type="button" className="step-pill" data-status={status} />}>
+      <IconComponent size={15} aria-hidden="true" />
       <span>{label}</span>
-    </div>
+    </Tooltip>
   );
 }
 
-function SystemStatus({ snapshot }: { snapshot: RunStateSnapshot }) {
-  const state = snapshot.data;
-  if (snapshot.status === "loading") {
-    return (
-      <div className="system-status neutral">
-        <span>looking for sandbox state</span>
-      </div>
-    );
-  }
-
-  if (snapshot.status === "error") {
-    return (
-      <div className="system-status warning">
-        <span>{state ? "reconnecting to sidecar" : "sidecar not ready"}</span>
-      </div>
-    );
-  }
-
-  if (!state) {
-    return (
-      <div className="system-status neutral">
-        <span>waiting for run</span>
-      </div>
-    );
+function EventMarkers({ events }: { events: ArtifactFsEvent[] }) {
+  const visible = events.slice(-5);
+  if (visible.length === 0) {
+    return <span className="signal-empty">no signals</span>;
   }
 
   return (
-    <div className="system-status live">
-      <span>{state.state === "done" ? "run complete" : "run live"}</span>
-      <code>{state.runId}</code>
+    <div className="event-markers" aria-label="ArtifactFS runtime signals">
+      {visible.map((event, index) => (
+        <Tooltip
+          key={`${event.kind}:${event.path || event.objectOid || event.generation || index}`}
+          content={eventTooltip(event)}
+          side="bottom"
+          render={<button type="button" className="event-marker" data-tone={eventTone(event.kind)} />}
+        >
+          {eventShortLabel(event.kind)}
+        </Tooltip>
+      ))}
     </div>
   );
 }
 
-function SourceRepoNode({ state }: { state: RunState | null }) {
+function AgentDetails({ agent, events }: { agent: WorkbenchAgent; events: ArtifactFsEvent[] }) {
   return (
-    <div className="system-node source-node">
-      <span className="node-eyebrow">source</span>
-      <strong>{repoLabel(state?.remote)}</strong>
-      <span className="wire-label">branch {state?.branch || "main"}</span>
-    </div>
-  );
-}
-
-function RivetControlNode({ state }: { state: RunState | null }) {
-  const desired = state?.desiredRepos?.length || state?.agentStates.length || state?.agents || 0;
-
-  return (
-    <div className="system-node rivet-node">
-      <span className="node-eyebrow">Rivet</span>
-      <strong>control plane</strong>
-      <span className="node-count">{desired || 2} desired repos</span>
-      <span className="wire-label">desired state</span>
-    </div>
-  );
-}
-
-function ArtifactFsDaemonNode({ state }: { state: RunState | null }) {
-  const mounted = state?.agentStates.filter((agent) => stageIndex(agent) >= 1 || agent.phase === "done").length || 0;
-  const total = state?.agentStates.length || state?.agents || 2;
-
-  return (
-    <div className="system-node artifactfs-node">
-      <span className="node-eyebrow">ArtifactFS</span>
-      <strong>daemon</strong>
-      <span className="node-count">{mounted}/{total} mounted</span>
-      <span className="wire-label">reconcile + mount</span>
-    </div>
-  );
-}
-
-function WorkspaceLane({ branch }: { branch: WorkspaceBranch }) {
-  const hasCommit = Boolean(branch.commit);
-  const isFailed = branch.phase === "failed";
-
-  return (
-    <div className={`workspace-lane ${branch.phase}`}>
-      <div className="workspace-folder-tab">{branch.agentId}</div>
-      <div className="workspace-lane-body">
-        <div className="workspace-lane-topline">
-          <code>{branch.mountPath}</code>
-          <Badge variant={phaseBadgeVariant(branch.phase)} appearance="dot">{branch.phase}</Badge>
+    <Popover>
+      <Popover.Trigger
+        render={<button type="button" className="agent-info" aria-label={`Inspect ${agent.agentId}`} />}
+      >
+        <InfoIcon size={15} aria-hidden="true" />
+      </Popover.Trigger>
+      <Popover.Content side="left" align="center" sideOffset={10} className="agent-popover">
+        <Popover.Title>{agent.agentId}</Popover.Title>
+        <Popover.Description>{agent.step}</Popover.Description>
+        <dl className="popover-facts">
+          <Fact label="Mount" value={agent.mountPath} />
+          <Fact label="Phase" value={agent.phase} />
+          <Fact label="Head" value={shortSha(agent.head)} />
+          <Fact label="Commit" value={shortSha(agent.commit)} />
+          {agent.error ? <Fact label="Error" value={agent.error} /> : null}
+        </dl>
+        <div className="popover-signals">
+          {events.slice(-4).map((event, index) => (
+            <span key={`${event.kind}:${event.path || event.generation || index}`} data-tone={eventTone(event.kind)}>
+              {eventShortLabel(event.kind)}
+            </span>
+          ))}
+          {events.length === 0 ? <span data-tone="neutral">none</span> : null}
         </div>
-        <div className="workspace-lane-path">
-          <span className="worker-pill">agent worker</span>
-          <span className="lane-connector" aria-hidden="true" />
-          <span className={hasCommit ? "commit-pill complete" : isFailed ? "commit-pill failed" : "commit-pill pending"}>
-            {hasCommit ? `commit ${shortSha(branch.commit)}` : isFailed ? "failed" : branch.step}
-          </span>
-        </div>
-        {branch.error ? <Text as="p" variant="error" size="sm">{branch.error}</Text> : null}
-      </div>
-    </div>
+      </Popover.Content>
+    </Popover>
   );
 }
 
-function StageTicks({ branches, state }: { branches: WorkspaceBranch[]; state: RunState | null }) {
-  const labels = ["desired", "mounted", "hydrated", "written", "committed"];
-  const total = branches.length;
-
-  return (
-    <div className="stage-ticks" aria-label="Run progress by stage">
-      {labels.map((label, index) => {
-        const complete = state ? branches.filter((branch) => branch.stage > index || branch.phase === "done").length : 0;
-        return (
-          <div className={complete === total && total > 0 ? "stage-tick complete" : complete > 0 ? "stage-tick active" : "stage-tick"} key={label}>
-            <span>{label}</span>
-            <strong>{complete}/{total}</strong>
-          </div>
-        );
-      })}
-    </div>
-  );
-}
-
-function TechnicalStatusError({ message, hasStaleData }: { message: string; hasStaleData: boolean }) {
-  return (
-    <details className="technical-error inline-error">
-      <summary>{hasStaleData ? "Showing stale data" : "Technical status error"}</summary>
-      <Text as="p" variant="error">{message}</Text>
-    </details>
-  );
-}
-
-function RunControlRail({ hasRun }: { hasRun: boolean }) {
-  const [newSandboxId, setNewSandboxId] = useState(defaultSandboxId);
-  const [agents, setAgents] = useState("2");
-  const [remote, setRemote] = useState("https://github.com/cloudflare/sandbox-sdk.git");
+function RunControl({ hasRun }: { hasRun: boolean }) {
+  const [newSandboxId, setNewSandboxId] = useState(() => defaultSandboxId());
+  const [agents, setAgents] = useState("3");
   const [branch, setBranch] = useState("main");
+  const [remote, setRemote] = useState("");
   const [status, setStatus] = useState<"idle" | "starting">("idle");
   const [error, setError] = useState<string | null>(null);
 
@@ -307,122 +464,48 @@ function RunControlRail({ hasRun }: { hasRun: boolean }) {
   };
 
   return (
-    <aside className="run-control-rail" aria-label="Run controls">
-      <form className="rail-form" onSubmit={startRun}>
-        <div className="rail-title">
-          <div>
-            <span>{hasRun ? "Next run" : "Start run"}</span>
-            <strong>Control</strong>
-          </div>
-          <Badge variant={token ? "neutral" : "error"} appearance="dot">{token ? "ready" : "missing token"}</Badge>
+    <section className="rail-section" aria-label="Start run">
+      <div className="rail-section-title">
+        <Text as="h2" variant="heading3">{hasRun ? "Next run" : "Start run"}</Text>
+        <Badge variant={token ? "neutral" : "error"} appearance="dot">{token ? "ready" : "no token"}</Badge>
+      </div>
+      <form className="run-form" onSubmit={startRun}>
+        <Input size="sm" label="Sandbox" value={newSandboxId} onChange={(event) => setNewSandboxId(event.currentTarget.value)} />
+        <div className="form-grid">
+          <Input size="sm" label="Agents" type="number" min="1" max="8" value={agents} onChange={(event) => setAgents(event.currentTarget.value)} />
+          <Input size="sm" label="Branch" value={branch} onChange={(event) => setBranch(event.currentTarget.value)} />
         </div>
-        <Input label="Sandbox" value={newSandboxId} onChange={(event) => setNewSandboxId(event.currentTarget.value)} />
-        <Input label="Agents" type="number" min="1" max="8" value={agents} onChange={(event) => setAgents(event.currentTarget.value)} />
-        <Input label="Remote" value={remote} onChange={(event) => setRemote(event.currentTarget.value)} />
-        <Input label="Branch" value={branch} onChange={(event) => setBranch(event.currentTarget.value)} />
-        <Button type="submit" variant="primary" loading={status === "starting"} disabled={!token || status === "starting"}>Start run</Button>
+        <Input size="sm" label="Remote" value={remote} onChange={(event) => setRemote(event.currentTarget.value)} />
+        <Button type="submit" size="sm" variant="primary" icon={PlayIcon} loading={status === "starting"} disabled={!token || status === "starting"}>
+          Start
+        </Button>
       </form>
       {error ? <Text as="p" variant="error" size="sm">{error}</Text> : null}
-    </aside>
-  );
-}
-
-function TechnicalTrace({ state }: { state: RunState }) {
-  const elapsed = formatDuration((state.state === "running" ? Date.now() : state.updatedAt) - state.startedAt);
-
-  return (
-    <section className="technical-trace" aria-label="Technical run details">
-      <LayerCard className="section-card trace-facts-card">
-        <SectionTitle title="Run facts" />
-        <dl className="facts-list trace-facts">
-          <Fact label="Sandbox" value={sandboxId} />
-          <Fact label="Run" value={state.runId} />
-          <Fact label="Remote" value={state.remote} />
-          <Fact label="Branch" value={state.branch} />
-          <Fact label="Elapsed" value={elapsed} />
-          <Fact label="Commits" value={String(commitCount(state))} />
-          <Fact label="Updated" value={formatTime(state.updatedAt)} />
-        </dl>
-      </LayerCard>
-
-      <LayerCard className="section-card table-card">
-        <SectionTitle title="Local commits" />
-        <CommitTable agents={state.agentStates} />
-      </LayerCard>
-
-      <LayerCard className="section-card table-card">
-        <SectionTitle title="ArtifactFS evidence" />
-        <EventTable events={state.artifactFsEvents || []} />
-      </LayerCard>
     </section>
   );
 }
 
-function SectionTitle({ title }: { title: string }) {
+function RunSnapshot({
+  snapshot,
+  state,
+  metrics,
+}: {
+  snapshot: RunStateSnapshot;
+  state: RunState | null;
+  metrics: RunMetrics;
+}) {
   return (
-    <div className="section-title">
-      <Text as="h2" variant="heading3">{title}</Text>
-    </div>
-  );
-}
-
-function CommitTable({ agents }: { agents: AgentState[] }) {
-  const committedAgents = agents.filter((agent) => agent.commit);
-  if (committedAgents.length === 0) {
-    return <Empty title="No commits yet" description="Commits appear here as agents finish." size="sm" />;
-  }
-
-  return (
-    <Table>
-      <Table.Header variant="compact">
-        <Table.Row>
-          <Table.Head>Agent</Table.Head>
-          <Table.Head>Repo</Table.Head>
-          <Table.Head>Mount</Table.Head>
-          <Table.Head>Commit</Table.Head>
-        </Table.Row>
-      </Table.Header>
-      <Table.Body>
-        {committedAgents.map((agent) => (
-          <Table.Row key={agent.agentId}>
-            <Table.Cell>{agent.agentId}</Table.Cell>
-            <Table.Cell>{agent.repoName}</Table.Cell>
-            <Table.Cell><code>{agent.mountPath}</code></Table.Cell>
-            <Table.Cell><code>{shortSha(agent.commit)}</code></Table.Cell>
-          </Table.Row>
-        ))}
-      </Table.Body>
-    </Table>
-  );
-}
-
-function EventTable({ events }: { events: ArtifactFsEvent[] }) {
-  const milestones = summarizeMilestoneEvents(events);
-  if (milestones.length === 0) {
-    return <Empty title="No events yet" description="Runtime events appear here after the daemon records mount, hydration, status, or overlay changes." size="sm" />;
-  }
-
-  return (
-    <Table>
-      <Table.Header variant="compact">
-        <Table.Row>
-          <Table.Head>Kind</Table.Head>
-          <Table.Head>Repo</Table.Head>
-          <Table.Head>Evidence</Table.Head>
-          <Table.Head>Count</Table.Head>
-        </Table.Row>
-      </Table.Header>
-      <Table.Body>
-        {milestones.map((event: MilestoneEvent) => (
-          <Table.Row key={event.key}>
-            <Table.Cell>{event.kind}</Table.Cell>
-            <Table.Cell>{event.repo}</Table.Cell>
-            <Table.Cell>{event.detail === "-" ? "-" : <code>{event.detail}</code>}</Table.Cell>
-            <Table.Cell>{event.count}</Table.Cell>
-          </Table.Row>
-        ))}
-      </Table.Body>
-    </Table>
+    <section className="rail-section rail-facts" aria-label="Current run">
+      <Text as="h2" variant="heading3">Run</Text>
+      <dl>
+        <Fact label="Sandbox" value={sandboxId} />
+        <Fact label="Source" value={repoLabel(state?.remote)} />
+        <Fact label="Branch" value={state?.branch || "main"} />
+        <Fact label="Agents" value={`${metrics.total}`} />
+        <Fact label="Elapsed" value={metrics.elapsed} />
+        <Fact label="Updated" value={state ? formatTime(state.updatedAt) : snapshotLabel(snapshot)} />
+      </dl>
+    </section>
   );
 }
 
@@ -435,41 +518,294 @@ function Fact({ label, value }: { label: string; value: string }) {
   );
 }
 
-function workspaceBranches(state: RunState | null): WorkspaceBranch[] {
+type RunMetrics = {
+  total: number;
+  desired: number;
+  mounted: number;
+  dirty: number;
+  committed: number;
+  elapsed: string;
+};
+
+function runMetrics(state: RunState | null, agents: WorkbenchAgent[]): RunMetrics {
+  const total = Math.max(agents.length, state?.agents || 0, 1);
+  const desired = state ? Math.max(state.desiredRepos?.length || 0, state.agentStates.length || state.agents || 0) : 0;
+  const mounted = state ? agents.filter((agent) => agent.stage >= 1 || agent.phase === "done").length : 0;
+  const dirty = state ? agents.filter((agent) => agent.phase === "dirty" || agent.stage >= 3).length : 0;
+  const committed = state ? commitCount(state) : 0;
+  const elapsed = state ? formatDuration((state.state === "running" ? Date.now() : state.updatedAt) - state.startedAt) : snapshotElapsedPlaceholder(agents);
+
+  return { total, desired, mounted, dirty, committed, elapsed };
+}
+
+function pipelineNodes(snapshot: RunStateSnapshot, state: RunState | null, metrics: RunMetrics): PipelineNode[] {
+  return [
+    {
+      key: "source",
+      label: "Source",
+      icon: GithubLogoIcon,
+      value: repoShortLabel(state?.remote),
+      status: state ? "done" : "pending",
+      detail: "GitHub is the source remote. The demo observes local mount and commit behavior only.",
+    },
+    {
+      key: "rivet",
+      label: "Rivet",
+      icon: CloudArrowDownIcon,
+      value: `${metrics.desired || 0}/${metrics.total}`,
+      status: countStatus(snapshot, metrics.total, metrics.desired),
+      detail: "Rivet publishes desired workspaces and sidecar endpoints for events, warmup, and credential environment.",
+    },
+    {
+      key: "artifactfs",
+      label: "ArtifactFS",
+      icon: PathIcon,
+      value: `${metrics.mounted}/${metrics.total}`,
+      status: countStatus(snapshot, metrics.total, metrics.mounted),
+      detail: "ArtifactFS converges desired repos into writable mounted folders and remains local filesystem authority.",
+    },
+    {
+      key: "agents",
+      label: "Agents",
+      icon: RobotIcon,
+      value: `${metrics.dirty}/${metrics.total}`,
+      status: countStatus(snapshot, metrics.total, metrics.dirty),
+      detail: "Simulated agents read and write ordinary files through ArtifactFS mounts.",
+    },
+    {
+      key: "commits",
+      label: "Commits",
+      icon: GitCommitIcon,
+      value: `${metrics.committed}/${metrics.total}`,
+      status: countStatus(snapshot, metrics.total, metrics.committed),
+      detail: "Commits are created locally inside mounted folders. The demo does not push to GitHub.",
+    },
+  ];
+}
+
+function countStatus(snapshot: RunStateSnapshot, total: number, count: number): StepStatus {
+  if (!snapshot.data) {
+    return "pending";
+  }
+  if (snapshot.data.state === "failed" && count < total) {
+    return "failed";
+  }
+  if (count >= total) {
+    return "done";
+  }
+  return count > 0 || snapshot.data.state === "running" ? "active" : "pending";
+}
+
+function workspaceAgents(state: RunState | null): WorkbenchAgent[] {
   if (!state) {
-    return ghostBranches(2);
+    return ghostAgents(2);
   }
   if (state.agentStates.length === 0) {
-    return ghostBranches(state.agents || 2);
+    return ghostAgents(state.agents || 2);
   }
   return state.agentStates.map((agent) => ({
-    agentId: agent.agentId,
-    repoName: agent.repoName,
-    mountPath: agent.mountPath,
-    phase: agent.phase,
-    step: agent.step,
-    commit: agent.commit,
-    head: agent.head,
-    error: agent.error,
+    ...agent,
     stage: stageIndex(agent),
   }));
 }
 
-function ghostBranches(count: number): WorkspaceBranch[] {
+function ghostAgents(count: number): WorkbenchAgent[] {
   return Array.from({ length: Math.max(1, Math.min(count, 4)) }, (_, index) => {
     const id = `agent-${index + 1}`;
     return {
       agentId: id,
       repoName: id,
       mountPath: `/workspace/mnt/${id}`,
-      phase: "starting",
-      step: "waiting for run",
+      phase: "starting" as AgentPhase,
+      step: "waiting",
       commit: null,
       head: null,
       error: null,
+      updatedAt: 0,
       stage: 0,
     };
   });
+}
+
+function isDesired(agent: AgentState, desiredRepos: DesiredRepo[]): boolean {
+  if (desiredRepos.length === 0) {
+    return agent.phase !== "starting" || agent.step !== "waiting";
+  }
+  return desiredRepos.some((repo) => repo.name === agent.repoName || repo.id === agent.repoName || repo.name === agent.agentId);
+}
+
+function artifactFsLabel(agent: WorkbenchAgent): string {
+  if (agent.phase === "failed") {
+    return "failed";
+  }
+  if (agent.phase === "dirty" || agent.stage >= 3) {
+    return "dirty";
+  }
+  if (agent.stage >= 2) {
+    return "hydrated";
+  }
+  if (agent.stage >= 1 || agent.phase === "mounted") {
+    return "mounted";
+  }
+  return "pending";
+}
+
+function agentWorkLabel(agent: WorkbenchAgent): string {
+  if (agent.phase === "failed") {
+    return "failed";
+  }
+  if (agent.phase === "done") {
+    return "done";
+  }
+  if (agent.step.includes("writing")) {
+    return "writing";
+  }
+  if (agent.step.includes("warming")) {
+    return "reading";
+  }
+  if (agent.step.includes("committing")) {
+    return "commit";
+  }
+  return agent.stage > 0 ? "active" : "waiting";
+}
+
+function artifactFsStatus(agent: WorkbenchAgent): StepStatus {
+  if (agent.phase === "failed") {
+    return "failed";
+  }
+  if (agent.phase === "done" || agent.stage >= 3) {
+    return "done";
+  }
+  if (agent.stage >= 1) {
+    return "active";
+  }
+  return "pending";
+}
+
+function agentWorkStatus(agent: WorkbenchAgent): StepStatus {
+  if (agent.phase === "failed") {
+    return "failed";
+  }
+  if (agent.phase === "done") {
+    return "done";
+  }
+  if (agent.stage >= 2) {
+    return "active";
+  }
+  return "pending";
+}
+
+function commitStatus(agent: WorkbenchAgent): StepStatus {
+  if (agent.phase === "failed") {
+    return "failed";
+  }
+  if (agent.commit || agent.phase === "done") {
+    return "done";
+  }
+  if (agent.stage >= 4) {
+    return "active";
+  }
+  return "pending";
+}
+
+function eventsForAgent(events: ArtifactFsEvent[], agent: AgentState): ArtifactFsEvent[] {
+  return events.filter((event) => {
+    const repo = event.repoName || event.repoId;
+    return repo === agent.repoName || repo === agent.agentId || repo.endsWith(`/${agent.repoName}`);
+  });
+}
+
+function eventShortLabel(kind: string): string {
+  switch (kind) {
+    case "repo.desired":
+      return "desired";
+    case "mount.attempted":
+      return "mount";
+    case "mount.ready":
+      return "mounted";
+    case "hydration.queued":
+      return "warm";
+    case "hydration.complete":
+      return "hydrated";
+    case "snapshot.published":
+      return "snap";
+    case "head.changed":
+      return "head";
+    case "fetch.succeeded":
+      return "fetch";
+    case "overlay.dirty":
+      return "dirty";
+    case "overlay.clean":
+      return "clean";
+    case "repo.disabled":
+      return "off";
+    default:
+      return kind.replace(/^.*\./, "").slice(0, 9);
+  }
+}
+
+function eventTone(kind: string): SignalTone {
+  if (kind.includes("hydration")) {
+    return "purple";
+  }
+  if (kind.includes("dirty") || kind.includes("queued")) {
+    return "amber";
+  }
+  if (kind.includes("ready") || kind.includes("clean") || kind.includes("succeeded")) {
+    return "green";
+  }
+  if (kind.includes("disabled")) {
+    return "red";
+  }
+  if (kind.includes("desired") || kind.includes("snapshot") || kind.includes("head")) {
+    return "blue";
+  }
+  return "neutral";
+}
+
+function eventTooltip(event: ArtifactFsEvent): string {
+  const detail = event.path || event.objectOid || event.state || (event.generation ? `generation ${event.generation}` : "");
+  return detail ? `${event.kind}: ${detail}` : event.kind;
+}
+
+function activitySubtitle(snapshot: RunStateSnapshot, state: RunState | null): string {
+  if (state) {
+    return `${state.agentStates.length || state.agents} mounted folders observed from live run state`;
+  }
+  if (snapshot.status === "error") {
+    return "waiting for live JSON from /demo/status";
+  }
+  return "connecting to live run state";
+}
+
+function snapshotElapsedPlaceholder(agents: WorkbenchAgent[]): string {
+  return agents.some((agent) => agent.stage > 0) ? "running" : "waiting";
+}
+
+function snapshotBadgeVariant(snapshot: RunStateSnapshot): "success" | "warning" | "error" | "neutral" {
+  if (snapshot.status === "error") {
+    return snapshot.data ? "warning" : "error";
+  }
+  if (!snapshot.data) {
+    return "neutral";
+  }
+  if (snapshot.data.state === "done") {
+    return "success";
+  }
+  if (snapshot.data.state === "failed") {
+    return "error";
+  }
+  return "warning";
+}
+
+function snapshotLabel(snapshot: RunStateSnapshot): string {
+  if (snapshot.status === "loading") {
+    return "connecting";
+  }
+  if (snapshot.status === "error") {
+    return snapshot.data ? "stale" : "offline";
+  }
+  return snapshot.data.state;
 }
 
 function repoLabel(remote: string | null | undefined): string {
@@ -482,6 +818,11 @@ function repoLabel(remote: string | null | undefined): string {
   } catch {
     return remote.replace(/^https:\/\/github\.com\//, "").replace(/\.git$/, "");
   }
+}
+
+function repoShortLabel(remote: string | null | undefined): string {
+  const label = repoLabel(remote);
+  return label.split("/").filter(Boolean).pop() || label;
 }
 
 function normalizeId(value: string): string {

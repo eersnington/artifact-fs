@@ -3,6 +3,7 @@
 *.exe
 *.test
 *.out
+dist/
 
 # Go workspace
 go.work
